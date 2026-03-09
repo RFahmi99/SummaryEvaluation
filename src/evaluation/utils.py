@@ -311,7 +311,7 @@ def quick_evaluate(summary: str, source: str) -> Dict[str, Any]:
     """
     Quick evaluation returning the complete evaluation dictionary.
     """
-    from evaluation.evaluation import SummaryEvaluationPipeline
+    from src.evaluation.evaluation import SummaryEvaluationPipeline
 
     pipeline = SummaryEvaluationPipeline(
         enable_safety=True,
