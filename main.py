@@ -96,131 +96,145 @@ class SummarizationPipeline:
         for i, post in enumerate(sampled_posts, 1):
             print(f"\nProcessing post {i}/{len(sampled_posts)}...")
             raw_source_text = post['source']
-
-            dataset_name = self.config['dataset'].lower()
             
-            # Map datasets to their specific multi-document delimiters
-            dataset_delimiters = {
-                'multi-news': "|||||",
-                'wcep-10': "</s>",  # ccdv/WCEP-10 default concatenation token
-            }
-            
-            # Identify datasets that are strictly single-document
-            single_doc_datasets = ['cnndm', 'xsum', 'wikihow']
-            
-            if dataset_name in single_doc_datasets:
-                # Do not split single-document datasets
-                articles = [raw_source_text.strip()]
-            else:
-                # Attempt to split multi-document datasets
-                delimiter = dataset_delimiters.get(dataset_name)
+            try:
+                dataset_name = self.config['dataset'].lower()
                 
-                if delimiter and delimiter in raw_source_text:
-                    articles = [art.strip() for art in raw_source_text.split(delimiter) if art.strip()]
-                else:
-                    # Fallback to double newlines for other multi-doc datasets
-                    # Only keep chunks that have a meaningful amount of words (>15)
-                    articles = [art.strip() for art in raw_source_text.split('\n\n') if len(art.split()) > 15]
-                    
-            # Fallback to original text if splitting results in an empty list
-            if not articles:
-                articles = [raw_source_text] 
-
-            # Calculate dynamic max_word_count based on the smallest article
-            word_counts = [len(article.split()) for article in articles]
-            min_article_words = min(word_counts)
-            
-            # Set dynamic max words (cap it at the smallest article's length)
-            user_max_words = self.config.get('max_word_count', 750)
-            dynamic_max_words = min(user_max_words, min_article_words)
-            
-            # Only reformat with "--- Article X ---" headers if it's actually a multi-doc dataset
-            if len(articles) > 1:
-                formatted_source_text = "\n\n".join([f"--- Article {idx+1} ---\n{art}" for idx, art in enumerate(articles)])
-            else:
-                formatted_source_text = articles[0]
-            
-            print(f"  Detected {len(articles)} article(s). Dynamic max_words set to: {dynamic_max_words}")
-            
-            attempt = 0
-            passed_all_checks = False
-            improvement_context = ""
-            best_result = None
-            
-            # Aggregate counters
-            total_prompt_tokens = 0
-            total_completion_tokens = 0
-            total_time = 0.0
-            initial_passed = None
-
-            # Wrap generation and evaluation in a while loop
-            while attempt <= max_retries and not passed_all_checks:
-                print(f"  Attempt {attempt + 1}...")
-                
-                # Attempt 1: Call with empty context. Retries: Use built context
-                final_summary, raw_response, time_taken, prompt_tokens, comp_tokens = self.llm_handler.summarize(
-                    self.prompt, formatted_source_text, dynamic_max_words, improvement_context
-                )
-                
-                total_prompt_tokens += prompt_tokens
-                total_completion_tokens += comp_tokens
-                total_time += time_taken
-                
-                # Evaluation
-                eval_result = evaluator.evaluate_summary(
-                    summary=final_summary, source_text=formatted_source_text, reference_summary=post.get('reference', None)
-                )
-                
-                passed_all_checks = eval_result.passed_all_checks
-                if attempt == 0:
-                    initial_passed = passed_all_checks
-                    
-                # Store the best/latest iteration
-                current_result = {
-                    'source': formatted_source_text,
-                    'reference': post.get('reference', ''),
-                    'summary': final_summary,
-                    'time_taken': total_time,
-                    'prompt_tokens': total_prompt_tokens,
-                    'completion_tokens': total_completion_tokens,
-                    'total_tokens': total_prompt_tokens + total_completion_tokens,
-                    'total_attempts': attempt + 1,
-                    'initial_passed_checks': initial_passed,
-                    'improvement_context_used': attempt > 0,
-                    'passed_all_checks': passed_all_checks,
-                    'similarity_score': eval_result.similarity_score,
-                    'factual_consistency_score': eval_result.factual_consistency_score,
-                    'relevance_score': eval_result.relevance_score,
-                    'coherence_score': eval_result.coherence_score,
-                    'fluency_score': eval_result.fluency_score,
-                    'fairness_score': eval_result.fairness_score,
-                    'safety_passed': eval_result.safety_passed,
-                    'failure_reasons': eval_result.failure_reasons
+                # Map datasets to their specific multi-document delimiters
+                dataset_delimiters = {
+                    'multi-news': "|||||",
+                    'wcep-10': "</s>",  # ccdv/WCEP-10 default concatenation token
                 }
-
-                # Update best_result if it's the first attempt, or if it has fewer failure reasons
-                if best_result is None or passed_all_checks or len(current_result['failure_reasons']) < len(best_result['failure_reasons']):
-                    best_result = current_result
                 
-                # Check condition
-                if passed_all_checks:
-                    print("  ✓ Passed all checks!")
-                    break
+                # Identify datasets that are strictly single-document
+                single_doc_datasets = ['cnndm', 'xsum', 'wikihow']
+                
+                if dataset_name in single_doc_datasets:
+                    # Do not split single-document datasets
+                    articles = [raw_source_text.strip()]
                 else:
-                    print(f"  ✗ Failed checks. Retrying... Reasons: {eval_result.failure_reasons}")
-                    attempt += 1
-                    if attempt <= max_retries:
-                        improvement_context = self.llm_handler.build_improvement_context(
-                            eval_result.feedback_logs,
-                            previous_draft=final_summary
-                        )
+                    # Attempt to split multi-document datasets
+                    delimiter = dataset_delimiters.get(dataset_name)
+                    
+                    if delimiter and delimiter in raw_source_text:
+                        articles = [art.strip() for art in raw_source_text.split(delimiter) if art.strip()]
+                    else:
+                        # Fallback to double newlines for other multi-doc datasets
+                        # Only keep chunks that have a meaningful amount of words (>15)
+                        articles = [art.strip() for art in raw_source_text.split('\n\n') if len(art.split()) > 15]
+                        
+                # Fallback to original text if splitting results in an empty list
+                if not articles:
+                    articles = [raw_source_text] 
 
-            # Handle ultimate failures
-            if not passed_all_checks:
-                print("  ⚠ Reached max retries. Flagging for human review.")
-                best_result['failure_reasons'].append("requires_human_review")
+                # Calculate dynamic max_word_count based on the smallest article
+                word_counts = [len(article.split()) for article in articles]
+                min_article_words = min(word_counts)
                 
-            results.append(best_result)
+                # Set dynamic max words (cap it at the smallest article's length)
+                user_max_words = self.config.get('max_word_count', 750)
+                dynamic_max_words = min(user_max_words, min_article_words)
+                
+                # Only reformat with "--- Article X ---" headers if it's actually a multi-doc dataset
+                if len(articles) > 1:
+                    formatted_source_text = "\n\n".join([f"--- Article {idx+1} ---\n{art}" for idx, art in enumerate(articles)])
+                else:
+                    formatted_source_text = articles[0]
+                
+                print(f"  Detected {len(articles)} article(s). Dynamic max_words set to: {dynamic_max_words}")
+                
+                attempt = 0
+                passed_all_checks = False
+                improvement_context = ""
+                best_result = None
+                
+                # Aggregate counters
+                total_prompt_tokens = 0
+                total_completion_tokens = 0
+                total_time = 0.0
+                initial_passed = None
+
+                # Wrap generation and evaluation in a while loop
+                while attempt <= max_retries and not passed_all_checks:
+                    print(f"  Attempt {attempt + 1}...")
+                    
+                    # Attempt 1: Call with empty context. Retries: Use built context
+                    final_summary, raw_response, time_taken, prompt_tokens, comp_tokens = self.llm_handler.summarize(
+                        self.prompt, formatted_source_text, dynamic_max_words, improvement_context
+                    )
+                    
+                    total_prompt_tokens += prompt_tokens
+                    total_completion_tokens += comp_tokens
+                    total_time += time_taken
+                    
+                    # Evaluation
+                    eval_result = evaluator.evaluate_summary(
+                        summary=final_summary, source_text=formatted_source_text, reference_summary=post.get('reference', None)
+                    )
+                    
+                    passed_all_checks = eval_result.passed_all_checks
+                    if attempt == 0:
+                        initial_passed = passed_all_checks
+                        
+                    # Store the best/latest iteration
+                    current_result = {
+                        'source': formatted_source_text,
+                        'reference': post.get('reference', ''),
+                        'summary': final_summary,
+                        'time_taken': total_time,
+                        'prompt_tokens': total_prompt_tokens,
+                        'completion_tokens': total_completion_tokens,
+                        'total_tokens': total_prompt_tokens + total_completion_tokens,
+                        'total_attempts': attempt + 1,
+                        'initial_passed_checks': initial_passed,
+                        'improvement_context_used': attempt > 0,
+                        'passed_all_checks': passed_all_checks,
+                        'similarity_score': eval_result.similarity_score,
+                        'factual_consistency_score': eval_result.factual_consistency_score,
+                        'relevance_score': eval_result.relevance_score,
+                        'coherence_score': eval_result.coherence_score,
+                        'fluency_score': eval_result.fluency_score,
+                        'fairness_score': eval_result.fairness_score,
+                        'safety_passed': eval_result.safety_passed,
+                        'failure_reasons': eval_result.failure_reasons
+                    }
+
+                    # Update best_result if it's the first attempt, or if it has fewer failure reasons
+                    if best_result is None or passed_all_checks or len(current_result['failure_reasons']) < len(best_result['failure_reasons']):
+                        best_result = current_result
+                    
+                    # Check condition
+                    if passed_all_checks:
+                        print("  ✓ Passed all checks!")
+                        break
+                    else:
+                        print(f"  ✗ Failed checks. Retrying... Reasons: {eval_result.failure_reasons}")
+                        attempt += 1
+                        if attempt <= max_retries:
+                            improvement_context = self.llm_handler.build_improvement_context(
+                                eval_result.feedback_logs,
+                                previous_draft=final_summary
+                            )
+
+                # Handle ultimate failures
+                if not passed_all_checks:
+                    print("  ⚠ Reached max retries. Flagging for human review.")
+                    best_result['failure_reasons'].append("requires_human_review")
+                    
+                results.append(best_result)
+
+            # CATCH EXCEPTION TO PREVENT CRASHING
+            except Exception as e:
+                print(f"  ❌ Error processing post {i}: {str(e)}")
+                # Append a failed placeholder so the pipeline records the failure and moves on
+                results.append({
+                    'source': raw_source_text,
+                    'reference': post.get('reference', ''),
+                    'summary': f"PIPELINE ERROR: {str(e)}",
+                    'passed_all_checks': False,
+                    'failure_reasons': [f"pipeline_fatal_error: {str(e)}"]
+                })
+                continue
 
         # Step 4: Save results
         print("\n[Step 4/4] Saving results to CSV...")
