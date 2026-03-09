@@ -9,16 +9,11 @@ class DatasetLoader:
     """Handles loading and sampling from various summarization datasets"""
 
     SUPPORTED_DATASETS = {
-        'multi-news': ('multi_news', None),
-        'wcep-10': ('webis/tldr-17', None),  # WCEP alternative
-        'duc2004': None,  # Requires manual download
-        'tac2011': None,  # Requires manual download
+        'multi-news': ('Awesome075/multi_news_parquet', None),
+        'wcep-10': ('ccdv/WCEP-10', None),  # WCEP alternative
         'cnndm': ('cnn_dailymail', '3.0.0'),
         'xsum': ('xsum', None),
-        'nyt': None,  # Requires manual download (LDC proprietary corpus)
-        'newsroom': ('newsroom', None),
-        'wikihow': None,  # Requires manual download (Local CSV files required)
-        'newshead': ('multi_news', None)  # Using multi_news as alternative
+        'wikihow': ('gursi26/wikihow-cleaned', None),  # Requires manual download (Local CSV files required)
     }
 
     def __init__(self, dataset_name: str, supported_datasets: dict, random_seed: int):
