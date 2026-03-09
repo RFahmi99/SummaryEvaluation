@@ -100,10 +100,6 @@ class EvaluationResult:
     failure_reasons: List[str] = None
     feedback_logs: Dict[str, str] = None
 
-    passed_all_checks: bool = False
-    failure_reasons: List[str] = None
-    feedback_logs: Dict[str, str] = None
-
     def __post_init__(self):
         if self.failure_reasons is None:
             self.failure_reasons = []
