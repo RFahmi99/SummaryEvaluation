@@ -114,22 +114,22 @@ class OllamaLLMHandler:
             if response.status_code == 200:
                 result = response.json()
                 raw_response = result.get('response', '').strip()
-                
-                # Extract token metrics from Ollama's response
                 prompt_tokens = result.get('prompt_eval_count', 0)
                 completion_tokens = result.get('eval_count', 0)
-                
-                # Extract just the final article block
                 final_summary = self._extract_summary(raw_response)
-
+    
+                return final_summary, raw_response, elapsed_time, prompt_tokens, completion_tokens
+            else:
+                error_msg = f"Error: API returned status {response.status_code}"
+                print(error_msg)
+                return error_msg, error_msg, elapsed_time, 0, 0
+    
         except Exception as e:
             elapsed_time = time.time() - start_time
             error_msg = f"Error: {str(e)}"
             print(error_msg)
-            
             if isinstance(e, ValueError) and "Failed to extract" in str(e):
                 raise e
-                
             return error_msg, error_msg, elapsed_time, 0, 0
 
     def _extract_summary(self, raw_response: str) -> str:
