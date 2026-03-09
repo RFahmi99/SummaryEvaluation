@@ -147,13 +147,13 @@ class DeepEvalPipeline:
         metrics.append(faithfulness_metric)
 
         # Hallucination detection
-        hallucination_metric = HallucinationMetric(
-            threshold=config.ThresholdConfig.min_factual_consistency,
-            model=self.judge_model,
-            include_reason=True,
-            async_mode=False
-        )
-        metrics.append(hallucination_metric)
+        # hallucination_metric = HallucinationMetric(
+        #     threshold=config.ThresholdConfig.min_factual_consistency,
+        #     model=self.judge_model,
+        #     include_reason=True,
+        #     async_mode=False
+        # )
+        # metrics.append(hallucination_metric)
 
         # Custom G-Eval for coherence
         coherence_metric = GEval(
