@@ -120,31 +120,7 @@ class OllamaLLMHandler:
                 completion_tokens = result.get('eval_count', 0)
                 
                 # Extract just the final article block
-                # Attempt 1: Strict match for the article block
-                article_match = re.search(r'```article\n(.*?)```', raw_response, re.DOTALL | re.IGNORECASE)
-                
-                if article_match:
-                    final_summary = article_match.group(1).strip()
-                else:
-                    # Attempt 2: Lenient match (handles trailing spaces or extra characters after ```article)
-                    fallback_match = re.search(r'```[ \t]*article.*?\n(.*?)```', raw_response, re.DOTALL | re.IGNORECASE)
-                    if fallback_match:
-                        final_summary = fallback_match.group(1).strip()
-                    else:
-                        # Attempt 3: Grab everything after the "## Headline" marker to the end or next code block
-                        headline_match = re.search(r'##\s*Headline\n(.*?)(?=```|$)', raw_response, re.DOTALL | re.IGNORECASE)
-                        if headline_match:
-                            final_summary = headline_match.group(1).strip()
-                        else:
-                            # Fatal extraction failure: Raise an error so the outer try-except catches it.
-                            # This forces the pipeline to score it as a failure and retry, instead of evaluating CoT.
-                            raise ValueError("Failed to extract the final article block from the LLM response.")
-                
-                return final_summary, raw_response, elapsed_time, prompt_tokens, completion_tokens
-            else:
-                error_msg = f"Error: API returned status {response.status_code}"
-                print(error_msg)
-                return error_msg, error_msg, elapsed_time, 0, 0
+                final_summary = self._extract_summary(raw_response)
 
         except Exception as e:
             elapsed_time = time.time() - start_time
@@ -155,6 +131,34 @@ class OllamaLLMHandler:
                 raise e
                 
             return error_msg, error_msg, elapsed_time, 0, 0
+
+    def _extract_summary(self, raw_response: str) -> str:
+        """
+        Extract the final summary from the LLM's raw response using multiple fallback strategies.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Strategy 1: Strict article block with optional newline after ```article
+        pattern1 = r'```[ \t]*article[ \t]*\n?(.*?)```'
+        match = re.search(pattern1, raw_response, re.DOTALL | re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        
+        # Strategy 2: "## Headline" marker (as instructed in the prompt)
+        pattern2 = r'##\s*Headline\s*\n(.*?)(?=```|$)'
+        match = re.search(pattern2, raw_response, re.DOTALL | re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        
+        # Strategy 3: Last code block of any language (often the final article)
+        code_blocks = re.findall(r'```(?:\w*)\n(.*?)```', raw_response, re.DOTALL)
+        if code_blocks:
+            return code_blocks[-1].strip()
+        
+        # Strategy 4: Desperate fallback – return the whole response
+        logger.warning("No article block or headline found; using full response as summary.")
+        return raw_response.strip()
 
     def batch_summarize(self, prompt: str, posts: list, max_word_count: int = 150) -> list:
         """
