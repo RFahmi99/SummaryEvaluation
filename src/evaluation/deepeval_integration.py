@@ -54,8 +54,19 @@ class InstructJudge(DeepEvalBaseLLM):
             },
             format="json" # Highly recommended for DeepEval
         )
+
+        raw_content = response['message']['content']
+
+        # Strip markdown JSON wrappers if the LLM includes them
+        raw_content = raw_content.strip()
+        if raw_content.startswith("```json"):
+            raw_content = raw_content[7:]
+        if raw_content.startswith("```"):
+            raw_content = raw_content[3:]
+        if raw_content.endswith("```"):
+            raw_content = raw_content[:-3]
         
-        return response['message']['content']
+        return raw_content.strip()
 
     async def a_generate(self, prompt: str) -> str:
         """Async generate (using Ollama's async client)"""
