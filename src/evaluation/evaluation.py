@@ -731,6 +731,11 @@ class SummaryEvaluationPipeline:
         relevancy = next((val for key, val in deepeval_results.items() if 'relevancy' in key.lower()), {})
         faithfulness = next((val for key, val in deepeval_results.items() if 'faithfulness' in key.lower()), {})
         coherence = next((val for key, val in deepeval_results.items() if 'coherence' in key.lower()), {})
+
+        # Fallback to TextualQualityEvaluator scores only if DeepEval fails to return a score.
+        result.factual_consistency_score = faithfulness.get('score', textual_results.get('factual_consistency_score'))
+        result.relevance_score = relevancy.get('score', textual_results.get('relevance_score'))
+        result.coherence_score = coherence.get('score', textual_results.get('coherence_score'))
         
         if not faithfulness.get('success', False):
             result.failure_reasons.append(f"Factual consistency failed (Score: {result.factual_consistency_score})")
