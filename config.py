@@ -10,7 +10,7 @@ from typing import Optional, Dict, Tuple
 @dataclass
 class ResummarizationConfig:
     """Configuration for adaptive resummarization loops"""
-    max_retries: int = 2  # Prevent infinite loops
+    max_retries: int = 0  # Prevent infinite loops
     retry_thresholds: Dict[str, float] = field(default_factory=lambda: {
         'factual_consistency': 0.4,
         'relevance': 0.4
