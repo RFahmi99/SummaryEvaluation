@@ -25,7 +25,7 @@ class DatasetLoader:
             random_seed: Seed for random sampling
         """
         self.dataset_name = dataset_name.lower()
-        self.supported_datasets = supported_datasets
+        self.supported_datasets = self.SUPPORTED_DATASETS
         self.random_seed = random_seed
         random.seed(random_seed)
 
@@ -94,8 +94,8 @@ class DatasetLoader:
             processed['reference'] = post.get('summary', '')
 
         elif self.dataset_name == 'wcep-10':
-            processed['source'] = post.get('article', '')
-            processed['reference'] = post.get('highlights', '')
+            processed['source'] = post.get('document', '')
+            processed['reference'] = post.get('summary', '')
 
         elif self.dataset_name == 'xsum':
             processed['source'] = post.get('document', '')
