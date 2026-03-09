@@ -128,9 +128,9 @@ class DeepEvalPipeline:
         """Create evaluation metrics using DeepEval"""
         metrics = []
 
-        # Relevancy metric
+        Relevancy metric
         relevancy_metric = AnswerRelevancyMetric(
-            threshold=0.7,
+            threshold=config.ThresholdConfig.min_relevance,
             model=self.judge_model,
             include_reason=True,
             async_mode=False
@@ -139,7 +139,7 @@ class DeepEvalPipeline:
 
         # Faithfulness metric (factual consistency)
         faithfulness_metric = FaithfulnessMetric(
-            threshold=0.7,
+            threshold=config.ThresholdConfig.min_factual_consistency,
             model=self.judge_model,
             include_reason=True,
             async_mode=False
@@ -148,7 +148,7 @@ class DeepEvalPipeline:
 
         # Hallucination detection
         hallucination_metric = HallucinationMetric(
-            threshold=0.5,
+            threshold=config.ThresholdConfig.min_factual_consistency,
             model=self.judge_model,
             include_reason=True,
             async_mode=False
@@ -161,7 +161,7 @@ class DeepEvalPipeline:
             criteria="Coherence - determine if the summary flows logically with smooth transitions. Evaluate based on: 1. Logical structure, 2. Smooth transitions between ideas, 3. Clear progression of thoughts.",
             evaluation_params=[LLMTestCaseParams.ACTUAL_OUTPUT],
             model=self.judge_model,
-            threshold=0.7,
+            threshold=config.ThresholdConfig.min_coherence,
             async_mode=False
         )
         metrics.append(coherence_metric)
