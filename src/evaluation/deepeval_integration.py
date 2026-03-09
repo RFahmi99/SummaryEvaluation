@@ -54,6 +54,14 @@ class InstructJudge(DeepEvalBaseLLM):
             
         raw_content = raw_content.strip()
         
+        # Extract the JSON object from any surrounding conversational filler
+        start_idx = raw_content.find('{')
+        end_idx = raw_content.rfind('}')
+        
+        if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
+            # Slice the string to contain strictly the JSON dictionary
+            raw_content = raw_content[start_idx:end_idx+1]
+            
         # 2. Try to parse and fix casing/schema issues dynamically
         try:
             parsed = json.loads(raw_content)
