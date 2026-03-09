@@ -128,7 +128,7 @@ class DeepEvalPipeline:
         """Create evaluation metrics using DeepEval"""
         metrics = []
 
-        Relevancy metric
+        # Relevancy metric
         relevancy_metric = AnswerRelevancyMetric(
             threshold=config.ThresholdConfig.min_relevance,
             model=self.judge_model,
