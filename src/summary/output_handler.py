@@ -35,7 +35,12 @@ class OutputHandler:
         """
         # Clean model name for filename
         clean_model_name = model_name.replace(':', '_').replace('/', '_')
-        filename = f"{clean_model_name}_{max_tokens}.csv"
+        
+        # Generate timestamp in YYYYMMDD_HHMMSS format
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Append timestamp to the filename
+        filename = f"{clean_model_name}_{max_tokens}_{timestamp}.csv"
         filepath = os.path.join(self.output_dir, filename)
 
         # Prepare CSV headers
