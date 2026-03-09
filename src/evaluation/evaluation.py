@@ -728,9 +728,9 @@ class SummaryEvaluationPipeline:
         deepeval_results = self.quality_evaluator.evaluate_single(test_case)
         
         # 3. Extract metrics based on the names defined in deepeval_integration.py
-        relevancy = deepeval_results.get('Answer Relevancy', {})
-        faithfulness = deepeval_results.get('Faithfulness', {})
-        coherence = deepeval_results.get('Coherence [GEval]', deepeval_results.get('Coherence', {}))
+        relevancy = next((val for key, val in deepeval_results.items() if 'relevancy' in key.lower()), {})
+        faithfulness = next((val for key, val in deepeval_results.items() if 'faithfulness' in key.lower()), {})
+        coherence = next((val for key, val in deepeval_results.items() if 'coherence' in key.lower()), {})
         
         if not faithfulness.get('success', False):
             result.failure_reasons.append(f"Factual consistency failed (Score: {result.factual_consistency_score})")
