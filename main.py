@@ -13,7 +13,7 @@ from src.summary.dataset_loader import DatasetLoader
 from src.summary.llm_handler import OllamaLLMHandler
 from src.summary.output_handler import OutputHandler
 from src.evaluation.evaluation import SummaryEvaluationPipeline
-from config import DEFAULT_GENERATION_CONFIG
+from config import DEFAULT_GENERATION_CONFIG, DEFAULT_PIPELINE_CONFIG
 
 os.environ["DEEPEVAL_DISABLE_TIMEOUTS"] = "1"
 os.environ["DEEPEVAL_PER_TASK_TIMEOUT_SECONDS_OVERRIDE"] = "1000"
@@ -91,7 +91,7 @@ class SummarizationPipeline:
         
         evaluator = SummaryEvaluationPipeline(enable_safety=True, enable_telemetry=False)
         results = []
-        max_retries = self.config.get('max_retries', 2)
+        max_retries = self.config.get('max_retries', DEFAULT_PIPELINE_CONFIG.resummarization.max_retries)
         
         for i, post in enumerate(sampled_posts, 1):
             print(f"\nProcessing post {i}/{len(sampled_posts)}...")
@@ -302,6 +302,7 @@ Note: Make sure Ollama is running (ollama serve) and your model is pulled (ollam
         'max_tokens': args.max_tokens,
         'dataset': args.dataset,
         'prompt_file': args.prompt_file,
+        'max_retries': DEFAULT_PIPELINE_CONFIG.resummarization.max_retries
     }
 
     # Print configuration
