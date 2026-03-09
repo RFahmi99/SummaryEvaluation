@@ -4,6 +4,7 @@ Provides integration with DeepEval framework as recommended in Phase 1
 """
 
 from typing import List, Dict, Any, Optional
+import json
 import logging
 import torch
 import config
@@ -38,55 +39,76 @@ class InstructJudge(DeepEvalBaseLLM):
         """DeepEval requirement, just returning the model name for Ollama"""
         return self.model_name
 
+    def _clean_response(self, raw_content: str, prompt: str) -> str:
+        """Helper to strip markdown and enforce expected DeepEval JSON keys."""
+        raw_content = raw_content.strip()
+        
+        # 1. Strip markdown JSON wrappers if the LLM includes them
+        if raw_content.startswith("```json"):
+            raw_content = raw_content[7:]
+        elif raw_content.startswith("```"):
+            raw_content = raw_content[3:]
+            
+        if raw_content.endswith("```"):
+            raw_content = raw_content[:-3]
+            
+        raw_content = raw_content.strip()
+        
+        # 2. Try to parse and fix casing/schema issues dynamically
+        try:
+            parsed = json.loads(raw_content)
+            if isinstance(parsed, dict):
+                # Lowercase all keys to fix {"Claims": ...} -> {"claims": ...}
+                parsed = {k.lower(): v for k, v in parsed.items()}
+                
+                prompt_lower = prompt.lower()
+                
+                if "claims" in prompt_lower and "claims" not in parsed:
+                    lists = [v for v in parsed.values() if isinstance(v, list)]
+                    parsed["claims"] = lists[0] if lists else []
+                    
+                if "truths" in prompt_lower and "truths" not in parsed:
+                    lists = [v for v in parsed.values() if isinstance(v, list)]
+                    parsed["truths"] = lists[0] if lists else []
+                    
+                return json.dumps(parsed)
+        except json.JSONDecodeError:
+            pass # Return the cleaned string and let DeepEval's internal regex handle it
+            
+        return raw_content
+
     def generate(self, prompt: str) -> str:
         """Generate response using Ollama, enforcing JSON output"""
         import ollama
         
-        # DeepEval handles the complex prompt engineering, we just pass it along
         response = ollama.chat(
             model=self.model_name,
             messages=[
-                {"role": "system", "content": "You are a strict, analytical AI judge. Always format your output as valid JSON as requested by the user prompt."},
+                {"role": "system", "content": "You are a strict, analytical AI judge. Always format your output as valid JSON exactly as requested by the user prompt."},
                 {"role": "user", "content": prompt}
             ],
-            options={
-                "temperature": 0.1 # Low temp for deterministic JSON structure
-            },
-            format="json" # Highly recommended for DeepEval
+            options={"temperature": 0.1},
+            format="json" 
         )
 
-        raw_content = response['message']['content']
-
-        # Strip markdown JSON wrappers if the LLM includes them
-        raw_content = raw_content.strip()
-        if raw_content.startswith("```json"):
-            raw_content = raw_content[7:]
-        if raw_content.startswith("```"):
-            raw_content = raw_content[3:]
-        if raw_content.endswith("```"):
-            raw_content = raw_content[:-3]
-        
-        return raw_content.strip()
+        return self._clean_response(response['message']['content'], prompt)
 
     async def a_generate(self, prompt: str) -> str:
         """Async generate (using Ollama's async client)"""
         import ollama
-        import asyncio
         
         client = ollama.AsyncClient(timeout=1000.0)
         response = await client.chat(
             model=self.model_name,
             messages=[
-                {"role": "system", "content": "You are a strict, analytical AI judge. Always format your output as valid JSON as requested by the user prompt."},
+                {"role": "system", "content": "You are a strict, analytical AI judge. Always format your output as valid JSON exactly as requested by the user prompt."},
                 {"role": "user", "content": prompt}
             ],
-            options={
-                "temperature": 0.1
-            },
+            options={"temperature": 0.1},
             format="json"
         )
         
-        return response['message']['content']
+        return self._clean_response(response['message']['content'], prompt)
 
     def get_model_name(self) -> str:
         """Return model name"""
