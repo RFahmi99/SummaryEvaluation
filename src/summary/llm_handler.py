@@ -120,7 +120,25 @@ class OllamaLLMHandler:
                 completion_tokens = result.get('eval_count', 0)
                 
                 # Extract just the final article block
+                # Attempt 1: Strict match for the article block
                 article_match = re.search(r'```article\n(.*?)```', raw_response, re.DOTALL | re.IGNORECASE)
+                
+                if article_match:
+                    final_summary = article_match.group(1).strip()
+                else:
+                    # Attempt 2: Lenient match (handles trailing spaces or extra characters after ```article)
+                    fallback_match = re.search(r'```[ \t]*article.*?\n(.*?)```', raw_response, re.DOTALL | re.IGNORECASE)
+                    if fallback_match:
+                        final_summary = fallback_match.group(1).strip()
+                    else:
+                        # Attempt 3: Grab everything after the "## Headline" marker to the end or next code block
+                        headline_match = re.search(r'##\s*Headline\n(.*?)(?=```|$)', raw_response, re.DOTALL | re.IGNORECASE)
+                        if headline_match:
+                            final_summary = headline_match.group(1).strip()
+                        else:
+                            # Fatal extraction failure: Raise an error so the outer try-except catches it.
+                            # This forces the pipeline to score it as a failure and retry, instead of evaluating CoT.
+                            raise ValueError("Failed to extract the final article block from the LLM response.")
                 final_summary = article_match.group(1).strip() if article_match else raw_response
                 
                 return final_summary, raw_response, elapsed_time, prompt_tokens, completion_tokens
