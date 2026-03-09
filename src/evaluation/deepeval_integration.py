@@ -78,6 +78,10 @@ class InstructJudge(DeepEvalBaseLLM):
                 if "truths" in prompt_lower and "truths" not in parsed:
                     lists = [v for v in parsed.values() if isinstance(v, list)]
                     parsed["truths"] = lists[0] if lists else []
+                
+                if "statements" in prompt_lower and "statements" not in parsed:
+                    lists = [v for v in parsed.values() if isinstance(v, list)]
+                    parsed["statements"] = lists[0] if lists else []
                     
                 return json.dumps(parsed)
         except json.JSONDecodeError:
