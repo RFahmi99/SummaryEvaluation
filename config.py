@@ -105,7 +105,9 @@ class GenerationConfig:
     fallback_prompt: str = """
 {{ improvement_context }}
 
-Please summarize the following text in under {{ max_word_count }} words:
+Please summarize the following text in under {{ max_word_count }} words. 
+You MUST wrap your final summary exactly inside an ```article``` code block.
+
 {{ sources }}
 """
     output_dir: str = "outputs"
