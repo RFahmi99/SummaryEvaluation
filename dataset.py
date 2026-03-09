@@ -26,4 +26,5 @@ def fetch_summarization_datasets():
     return multi_news, xsum, wikihow, cnndm, wcep10
 
 # Execute the function
-multi_news, xsum, wikihow, cnndm, wcep10 = fetch_summarization_datasets()
+if __name__ == "__main__":
+    multi_news, xsum, wikihow, cnndm, wcep10 = fetch_summarization_datasets()
