@@ -139,7 +139,6 @@ class OllamaLLMHandler:
                             # Fatal extraction failure: Raise an error so the outer try-except catches it.
                             # This forces the pipeline to score it as a failure and retry, instead of evaluating CoT.
                             raise ValueError("Failed to extract the final article block from the LLM response.")
-                final_summary = article_match.group(1).strip() if article_match else raw_response
                 
                 return final_summary, raw_response, elapsed_time, prompt_tokens, completion_tokens
             else:
@@ -151,6 +150,10 @@ class OllamaLLMHandler:
             elapsed_time = time.time() - start_time
             error_msg = f"Error: {str(e)}"
             print(error_msg)
+            
+            if isinstance(e, ValueError) and "Failed to extract" in str(e):
+                raise e
+                
             return error_msg, error_msg, elapsed_time, 0, 0
 
     def batch_summarize(self, prompt: str, posts: list, max_word_count: int = 150) -> list:
