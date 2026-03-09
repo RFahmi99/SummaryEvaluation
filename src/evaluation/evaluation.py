@@ -434,6 +434,9 @@ Score 5: The summary flows perfectly with smooth transitions.
             generated_tokens = outputs[0][input_length:]
             response = self.prometheus_tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
+            # Initialize score to a default value before parsing
+            score = 0.0 
+
             # Extract score from response using [-1] to target the final output
             if "[RESULT]" in response:
                 score_text = response.split("[RESULT]")[-1].strip()
@@ -448,6 +451,11 @@ Score 5: The summary flows perfectly with smooth transitions.
                         score = float(fallback_match[-1]) / 5.0
                     else:
                         score = 0.0
+            else:
+                # Optional: you can try to extract a number even if [RESULT] is missing
+                fallback_match = re.findall(r"([0-9]+(?:\.[0-9]+)?)", response)
+                if fallback_match:
+                    score = float(fallback_match[-1]) / 5.0
 
             return score, response
         except Exception as e:
