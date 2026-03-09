@@ -437,13 +437,17 @@ Score 5: The summary flows perfectly with smooth transitions.
             # Extract score from response using [-1] to target the final output
             if "[RESULT]" in response:
                 score_text = response.split("[RESULT]")[-1].strip()
-                match = re.search(r"([0-9]+(?:\.[0-9]+)?)", score_text)
+                match = re.search(r"\[RESULT\]\s*([0-9]+(?:\.[0-9]+)?)", response, re.IGNORECASE)
+
                 if match:
                     score = float(match.group(1)) / 5.0
                 else:
-                    score = 0.0
-            else:
-                score = 0.0
+                    # Fallback: Just try to find the last number in the response
+                    fallback_match = re.findall(r"([0-9]+(?:\.[0-9]+)?)", response)
+                    if fallback_match:
+                        score = float(fallback_match[-1]) / 5.0
+                    else:
+                        score = 0.0
 
             return score, response
         except Exception as e:
@@ -562,11 +566,11 @@ Score 5: The summary is perfectly objective, completely free of introduced bias,
                 score_text = response.split("[RESULT]")[-1].strip()
                 
                 # Extract the first digit found in the text
-                digits = [char for char in score_text if char.isdigit()]
-                if digits:
-                    score = float(digits[0]) / 5.0  # Normalize from 1-5 to a 0.0-1.0 scale
+                match = re.search(r"([0-9]+(?:\.[0-9]+)?)", score_text)
+                if match:
+                    score = float(match.group(1)) / 5.0 
                 else:
-                    score = 0.0  # Fallback
+                    score = 0.0
             else:
                 score = 0.0  # Fallback if generation failed to follow format
 
@@ -729,9 +733,14 @@ class SummaryEvaluationPipeline:
         coherence = next((val for key, val in deepeval_results.items() if 'coherence' in key.lower()), {})
 
         # Fallback to TextualQualityEvaluator scores only if DeepEval fails to return a score.
-        result.factual_consistency_score = faithfulness.get('score', textual_results.get('factual_consistency_score'))
-        result.relevance_score = relevancy.get('score', textual_results.get('relevance_score'))
-        result.coherence_score = coherence.get('score', textual_results.get('coherence_score'))
+        f_score = faithfulness.get('score', 0.0)
+        result.factual_consistency_score = textual_results.get('factual_consistency_score') if f_score == 0.0 else f_score
+        
+        r_score = relevancy.get('score', 0.0)
+        result.relevance_score = textual_results.get('relevance_score') if r_score == 0.0 else r_score
+        
+        c_score = coherence.get('score', 0.0)
+        result.coherence_score = textual_results.get('coherence_score') if c_score == 0.0 else c_score
         
         if not faithfulness.get('success', False):
             result.failure_reasons.append(f"Factual consistency failed (Score: {result.factual_consistency_score})")
