@@ -93,7 +93,7 @@ class DatasetLoader:
             processed['source'] = post.get('document', '')
             processed['reference'] = post.get('summary', '')
 
-        elif self.dataset_name == 'cnndm':
+        elif self.dataset_name == 'wcep-10':
             processed['source'] = post.get('article', '')
             processed['reference'] = post.get('highlights', '')
 
@@ -101,17 +101,13 @@ class DatasetLoader:
             processed['source'] = post.get('document', '')
             processed['reference'] = post.get('summary', '')
 
+        elif self.dataset_name == 'cnndm':
+            processed['source'] = post.get('article', '')
+            processed['reference'] = post.get('highlights', '')
+
         elif self.dataset_name == 'wikihow':
             processed['source'] = post.get('text', '')
             processed['reference'] = post.get('headline', '')
-
-        elif self.dataset_name == 'newsroom':
-            processed['source'] = post.get('text', '')
-            processed['reference'] = post.get('summary', '')
-
-        elif self.dataset_name == 'nyt':
-            processed['source'] = post.get('article', '')
-            processed['reference'] = post.get('abstract', '')
 
         else:
             # Generic fallback
