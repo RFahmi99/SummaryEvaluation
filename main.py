@@ -176,7 +176,7 @@ class SummarizationPipeline:
                     initial_passed = passed_all_checks
                     
                 # Store the best/latest iteration
-                best_result = {
+                current_result = {
                     'source': formatted_source_text,
                     'reference': post.get('reference', ''),
                     'summary': final_summary,
