@@ -710,10 +710,6 @@ class SummaryEvaluationPipeline:
         result.similarity_score = textual_results.get('similarity_score')
         result.fluency_score = textual_results.get('fluency_score')
         result.fairness_score = textual_results.get('fairness_score')
-
-        result.factual_consistency_score = textual_results.get('factual_consistency_score')
-        result.relevance_score = textual_results.get('relevance_score')
-        result.coherence_score = textual_results.get('coherence_score')
         
         # 1. Create a DeepEval test case
         test_case = self.quality_evaluator.create_test_case(
