@@ -24,7 +24,7 @@ class ModelConfig:
     # Phase 2: Textual Quality Models
     similarity_model: str = "roberta-large"  # For BERTScore
     factual_model: str = "ufal/bge-m3-alignscore"  # AlignScore alternative
-    judge_model: str = "llama3"  # Prometheus 2
+    judge_model: str = "phi4:latest"  # Prometheus 2
     fluency_model: str = "meta-llama/Llama-3-8b"  # For perplexity
 
     # Phase 3: Safety Models
