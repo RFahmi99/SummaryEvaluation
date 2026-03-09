@@ -153,7 +153,7 @@ class SafetyGate:
             try:
                 self.safety_classifier = pipeline(
                     "text-classification",
-                    model="martin-ha/toxic-comment-model", 
+                    model=config.ModelConfig.safety_model,
                     device=0 if torch.cuda.is_available() else -1
                 )
                 logger.info("Toxicity classifier loaded successfully")
@@ -416,7 +416,7 @@ Score 5: The summary flows perfectly with smooth transitions.
                 prompt, 
                 return_tensors="pt", 
                 truncation=True, 
-                max_length=2048
+                max_length=8192
             )
 
             if self.device == 0:
@@ -481,7 +481,7 @@ Score 5: The summary flows perfectly with smooth transitions.
                 text, 
                 return_tensors="pt", 
                 truncation=True, 
-                max_length=2048
+                max_length=8192
             )
             
             # Dynamically route inputs to whatever device the causal LM is currently utilizing
@@ -548,7 +548,7 @@ Score 5: The summary is perfectly objective, completely free of introduced bias,
                 prompt, 
                 return_tensors="pt", 
                 truncation=True, 
-                max_length=2048
+                max_length=8192
             )
 
             # Move to GPU if available
