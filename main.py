@@ -197,6 +197,10 @@ class SummarizationPipeline:
                     'safety_passed': eval_result.safety_passed,
                     'failure_reasons': eval_result.failure_reasons
                 }
+
+                # Update best_result if it's the first attempt, or if it has fewer failure reasons
+                if best_result is None or passed_all_checks or len(current_result['failure_reasons']) < len(best_result['failure_reasons']):
+                    best_result = current_result
                 
                 # Check condition
                 if passed_all_checks:
