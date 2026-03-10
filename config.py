@@ -22,13 +22,20 @@ class ModelConfig:
     """Configuration for evaluation models"""
 
     # Phase 2: Textual Quality Models
-    similarity_model: str = "roberta-large"  # For BERTScore
-    factual_model: str = "ufal/bge-m3-alignscore"  # AlignScore alternative
-    judge_model: str = "phi4:latest"  # Prometheus 2
-    fluency_model: str = "meta-llama/Llama-3-8b"  # For perplexity
+    similarity_model: str = "microsoft/deberta-v3-large"  # For BERTScore
+    judge_model: str = "Unbabel/M-Prometheus-14B"  # Prometheus 2
+    fluency_model: str = "Qwen/Qwen2.5-7B"  # For perplexity
 
     # Phase 3: Safety Models
-    safety_model: str = "meta-llama/LlamaGuard-7b"  # Or ShieldGemma
+    safety_model: str = "unitary/unbiased-toxic-roberta"  # Or ShieldGemma
+
+    # # Phase 2: Textual Quality Models
+    # similarity_model: str = "microsoft/deberta-v3-large"  # For BERTScore
+    # judge_model: str = "prometheus-eval/prometheus-7b-v2.0"
+    # fluency_model: str = "Qwen/Qwen2.5-7B"  # For perplexity
+
+    # # Phase 3: Safety Models
+    # safety_model: str = "unitary/unbiased-toxic-roberta"  # Or ShieldGemma
 
     # Inference settings
     device: str = "cuda"  # "cuda" or "cpu"

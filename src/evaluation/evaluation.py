@@ -5,6 +5,7 @@ Based on SOTA open-source tools and frameworks
 
 import re
 import time
+import torch
 import logging
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, asdict
@@ -12,20 +13,6 @@ from datetime import datetime
 import json
 from urllib import response
 import config
-
-from src.evaluation.deepeval_integration import DeepEvalPipeline
-
-# Core evaluation frameworks
-try:
-    from deepeval import evaluate
-    from deepeval.test_case import LLMTestCase
-    from deepeval.metrics import (
-        AnswerRelevancyMetric,
-        FaithfulnessMetric,
-        HallucinationMetric
-    )
-except ImportError:
-    print("DeepEval not installed. Install with: pip install deepeval")
 
 # BERTScore for similarity
 try:
@@ -44,11 +31,9 @@ except ImportError:
 try:
     from transformers import (
         AutoTokenizer, 
-        AutoModelForSequenceClassification,
         AutoModelForCausalLM,
         pipeline
     )
-    import torch
 except ImportError:
     print("Transformers not installed. Install with: pip install transformers torch")
 
@@ -164,7 +149,8 @@ class SafetyGate:
         # Initialize Presidio for PII detection
         if self.use_presidio:
             try:
-                # Explicitly check for the model or let Presidio try to load it
+                logging.getLogger("presidio-analyzer").setLevel(logging.ERROR)
+                
                 self.analyzer = AnalyzerEngine(default_score_threshold=0.4) 
                 self.anonymizer = AnonymizerEngine()
                 logger.info("Presidio initialized successfully")
@@ -173,6 +159,13 @@ class SafetyGate:
                 logger.info("Suggestion: Run 'python -m spacy download en_core_web_lg'")
                 self.analyzer = None
 
+    def _chunk_text(self, text: str, chunk_size: int = 300) -> list:
+        """Helper to safely split text into word-based chunks."""
+        words = str(text).split()
+        if not words:
+            return []
+        return [' '.join(words[i:i + chunk_size]) for i in range(0, len(words), chunk_size)]
+
     def check_toxicity(self, text: str) -> tuple[bool, float]:
         """Check for toxicity, harm, and alignment issues using text chunking"""
         if not self.safety_classifier:
@@ -180,40 +173,34 @@ class SafetyGate:
             return True, 0.0
 
         try:
-            # The model has a max sequence length of 512 tokens.
-            # We split the text into chunks of ~300 words to safely stay under the limit.
-            words = text.split()
-            chunk_size = 300
+            chunks = self._chunk_text(text, chunk_size=300)
             
-            if not words:
+            if not chunks:
                 return True, 0.0
                 
-            chunks = [' '.join(words[i:i + chunk_size]) for i in range(0, len(words), chunk_size)]
-            
             is_safe_overall = True
             max_toxicity = 0.0
 
             for chunk in chunks:
-                if not chunk.strip():
+                # Skip chunks that are too small to have meaningful context
+                if len(chunk.split()) < 10:
                     continue
                     
-                # Evaluate chunk (adding truncation=True as a secondary safety net)
                 result = self.safety_classifier(chunk, truncation=True, max_length=512)
-                
-                # Extract label and confidence from the pipeline result
                 label = result[0]['label'].lower()
                 confidence = result[0]['score']
 
-                is_safe = (label == 'non-toxic')
+                is_safe = label not in ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate', 'unsafe']
                 
-                # Calculate a normalized toxicity score (0.0 to 1.0)
-                # If toxic, the score is the confidence. If safe, it's the inverse.
-                toxicity_score = confidence if not is_safe else (1.0 - confidence)
+                # If it's safe, baseline toxicity is 0.0 (or a very low number). 
+                # Only use the confidence score directly if a toxic label is actively predicted.
+                if is_safe:
+                    toxicity_score = 0.0 
+                else:
+                    toxicity_score = confidence
                 
-                # Keep track of the highest toxicity score across all chunks
                 max_toxicity = max(max_toxicity, toxicity_score)
                 
-                # If any chunk is toxic, the whole text is flagged
                 if not is_safe:
                     is_safe_overall = False
 
@@ -224,28 +211,42 @@ class SafetyGate:
             return True, 0.0
 
     def check_pii(self, text: str) -> tuple[bool, List[str]]:
-        """Check for PII leakage"""
+        """Check for PII leakage using chunking to bypass Presidio's 10k character limit"""
         if not self.analyzer:
             logger.warning("Presidio not available, skipping PII check")
             return True, []
 
         try:
-            results = self.analyzer.analyze(
-                text=text,
-                language='en',
-                entities=[
-                    "EMAIL_ADDRESS", "PHONE_NUMBER", 
-                    "CREDIT_CARD", "US_SSN",
-                ]
-            )
+            # We can use larger chunks for Presidio since it doesn't use standard token limits,
+            # but we must stay under its 10,000 character hard limit.
+            chunks = self._chunk_text(text, chunk_size=1000)
+            
+            if not chunks:
+                return True, []
 
-            pii_types = [result.entity_type for result in results]
-            has_pii = len(pii_types) > 0
+            all_pii_types = set()
+
+            for chunk in chunks:
+                results = self.analyzer.analyze(
+                    text=chunk,
+                    language='en',
+                    entities=[
+                        "EMAIL_ADDRESS", "PHONE_NUMBER", 
+                        "CREDIT_CARD", "US_SSN",
+                    ]
+                )
+                
+                # Aggregate any PII found in this chunk
+                for result in results:
+                    all_pii_types.add(result.entity_type)
+
+            has_pii = len(all_pii_types) > 0
 
             if has_pii:
-                logger.warning(f"PII detected: {pii_types}")
+                logger.warning(f"PII detected: {list(all_pii_types)}")
 
-            return not has_pii, pii_types
+            return not has_pii, list(all_pii_types)
+
         except Exception as e:
             logger.error(f"PII check failed: {e}")
             return True, []
@@ -277,100 +278,136 @@ class TextualQualityEvaluator:
         # 1. Initialize BERTScore properly (ONLY ONCE)
         try:
             device_str = "cuda" if self.device == 0 else "cpu"
-            self.bert_scorer = BERTScorer(model_type="roberta-large", lang="en", device=device_str)
+            self.bert_scorer = BERTScorer(model_type=config.ModelConfig.similarity_model, lang="en", device=device_str)
+
+            # Caps the default max length if the HF config left it infinitely large.
+            if hasattr(self.bert_scorer, '_tokenizer'):
+                tokenizer = self.bert_scorer._tokenizer
+                if getattr(tokenizer, 'model_max_length', 0) > 100000:
+                    tokenizer.model_max_length = 512
+
             logger.info("BERTScore model loaded")
         except Exception as e:
             logger.warning(f"Could not load BERTScore: {e}")
             self.bert_scorer = None
 
-        # 2. AlignScore for factual consistency
+        # 2. Prometheus 2
         try:
-            self.alignscore_model = AutoModelForSequenceClassification.from_pretrained("cross-encoder/nli-deberta-v3-base")
-            self.alignscore_tokenizer = AutoTokenizer.from_pretrained("cross-encoder/nli-deberta-v3-base")
-            if self.device == 0:
-                self.alignscore_model = self.alignscore_model.cuda()
-            logger.info("AlignScore model loaded")
-        except Exception as e:
-            logger.warning(f"Could not load AlignScore: {e}")
-            self.alignscore_model = None
-
-        # 3. Prometheus 2
-        try:
+            # Grab the model name dynamically from config
+            prometheus_model_name = config.DEFAULT_MODEL_CONFIG.judge_model
+            
             self.prometheus_tokenizer = AutoTokenizer.from_pretrained(
-                "prometheus-eval/prometheus-7b-v2.0"
+                prometheus_model_name
             )
-            # self.prometheus_model = AutoModelForCausalLM.from_pretrained(
-            #     "prometheus-eval/prometheus-7b-v2.0",
-            #     dtype=torch.float16 if self.device == 0 else torch.float32,
-            #     tie_word_embeddings=False
-            # )
             self.prometheus_model = AutoModelForCausalLM.from_pretrained(
-                "prometheus-eval/prometheus-7b-v2.0",
+                prometheus_model_name,
                 dtype=torch.float16,           
                 low_cpu_mem_usage=True,        
                 device_map="auto",              
-                tie_word_embeddings=False
+                # tie_word_embeddings=False
             )
-            if self.device == 0:
-                self.prometheus_model = self.prometheus_model.cuda()
-            logger.info("Prometheus 2 model loaded")
+
+            logger.info(f"Prometheus Judge ({prometheus_model_name}) loaded successfully")
         except Exception as e:
-            logger.warning(f"Could not load Prometheus 2: {e}")
+            logger.warning(f"Could not load Prometheus Judge: {e}")
             self.prometheus_model = None
 
+        # 3. Fluency Model
+        try:
+            # Grab the model name dynamically from config
+            fluency_model_name = config.DEFAULT_MODEL_CONFIG.fluency_model
+            
+            self.fluency_tokenizer = AutoTokenizer.from_pretrained(
+                fluency_model_name
+            )
+            self.fluency_model = AutoModelForCausalLM.from_pretrained(
+                fluency_model_name,
+                dtype=torch.float16,           
+                low_cpu_mem_usage=True,        
+                device_map="auto"
+            )
+
+            logger.info(f"Fluency Model ({fluency_model_name}) loaded successfully")
+        except Exception as e:
+            logger.warning(f"Could not load Fluency Model: {e}")
+            self.fluency_model = None
+            self.fluency_tokenizer = None
+
+    def _chunk_text(self, text: str, max_words: int = 300) -> list:
+        """Helper method to split text into safe word-count chunks."""
+        text = str(text)
+        
+        # Safeguard: Prevent massive contiguous strings (like base64 or long URLs) 
+        # from causing tokenization overflow by breaking them every 100 characters.
+        import re
+        text = re.sub(r'(\S{100})', r'\1 ', text)
+        
+        words = text.split()
+        if not words:
+            return [""]
+        return [" ".join(words[i:i + max_words]) for i in range(0, len(words), max_words)]
+
     def evaluate_similarity(self, generated: str, reference: str) -> float:
-        """BERTScore for similarity"""
+        """BERTScore for similarity using cross-chunking for long documents."""
         if getattr(self, 'bert_scorer', None) is None:
             logger.warning("BERTScore not available")
             return 0.0
-            
+
         try:
-            # Use the cached scorer
-            P, R, F1 = self.bert_scorer.score(
-                [generated], 
-                [reference], 
-                verbose=False
-            )
-            return F1[0].item() # Extract from tensor
+            # 1. Type guard for multi-reference datasets
+            if isinstance(reference, list):
+                reference = " ".join(str(r) for r in reference)
+            
+            gen_str = str(generated).strip()
+            ref_str = str(reference).strip()
+            
+            if not gen_str or not ref_str:
+                return 0.0
+
+            # 2. Chunk both texts to stay well under the matrix and token limits
+            chunk_size = 300
+            gen_chunks = self._chunk_text(gen_str, chunk_size)
+            ref_chunks = self._chunk_text(ref_str, chunk_size)
+
+            # Safeguard: Enforce a strict character limit per chunk (~3000 chars is well within 512 tokens)
+            gen_chunks = [chunk[:3000] for chunk in gen_chunks]
+            ref_chunks = [chunk[:3000] for chunk in ref_chunks]
+
+            # 3. Fast path: If both texts are short, do a standard comparison
+            if len(gen_chunks) == 1 and len(ref_chunks) == 1:
+                P, R, F1 = self.bert_scorer.score([gen_chunks[0]], [ref_chunks[0]], verbose=False)
+                return float(F1.item())
+
+            # 4. Cross-chunk comparison for long texts
+            chunk_f1_scores = []
+            
+            for g_chunk in gen_chunks:
+                best_f1 = 0.0
+                # Compare the generated chunk against every reference chunk
+                for r_chunk in ref_chunks:
+                    _, _, F1 = self.bert_scorer.score([g_chunk], [r_chunk], verbose=False)
+                    score = float(F1.item())
+                    if score > best_f1:
+                        best_f1 = score
+                
+                # Keep the best match for this specific generated chunk
+                chunk_f1_scores.append(best_f1)
+                
+            # 5. Average the best matching scores to get the overall similarity
+            overall_f1 = sum(chunk_f1_scores) / len(chunk_f1_scores) if chunk_f1_scores else 0.0
+            return overall_f1
+            
         except Exception as e:
             logger.error(f"BERTScore evaluation failed: {e}")
             return 0.0
 
-    def evaluate_factual_consistency(self, source: str, summary: str) -> float:
-        """AlignScore for factual consistency"""
-        if not self.alignscore_model:
-            logger.warning("AlignScore not available")
-            return 0.0
-
-        try:
-            inputs = self.alignscore_tokenizer(
-                source, 
-                summary, 
-                return_tensors="pt", 
-                truncation=True, 
-                max_length=512
-            )
-
-            if self.device == 0:
-                inputs = {k: v.cuda() for k, v in inputs.items()}
-
-            with torch.no_grad():
-                outputs = self.alignscore_model(**inputs)
-                entailment_idx = self.alignscore_model.config.label2id.get("ENTAILMENT", 1)
-                score = torch.softmax(outputs.logits, dim=1)[0][entailment_idx].item()
-
-            return score
-        except Exception as e:
-            logger.error(f"AlignScore evaluation failed: {e}")
-            return 0.0
-
-    def evaluate_with_prometheus(self, summary: str, source: str, 
-                                  dimension: str) -> tuple[float, str]:
-        """Use Prometheus 2 for Relevance and Coherence"""
+    def evaluate_with_prometheus(self, summary: str, source: str, dimension: str) -> dict:
+        """Use Prometheus 2 to generate strict JSON feedback for Relevancy, Coherence, and Factual Consistency"""
         if not self.prometheus_model:
             logger.warning("Prometheus 2 not available")
-            return 0.0, ""
+            return {"score": 0.0, "passed": False, "actionable_feedback": "Prometheus model unavailable."}
 
+        # Define custom prompts that force a strict JSON output
         prompts = {
             'relevance': f"""###Task Description:
 An instruction (might include an Input inside it), a response to evaluate, a reference answer that gets a score of 5, and a score rubric representing an evaluation criterion are given.
@@ -379,131 +416,153 @@ An instruction (might include an Input inside it), a response to evaluate, a ref
 3. The output format should look as follows: "Feedback: {{write a feedback for criteria}} [RESULT] {{an integer number between 1 and 5}}"
 
 ###The instruction to evaluate:
-Summarize the following text: {source[:500]}
+Evaluate the relevance of the following summary based on the original source text.
+Source text: {source[:10000]}
 
 ###Response to evaluate:
 {summary}
 
 ###Score Rubric:
-How well does the summary address the core content of the source text?
-Score 1: The summary is completely irrelevant to the source.
-Score 5: The summary perfectly captures the essential information from the source.
+How relevant is the summary to the source text?
+Score 1: The summary is completely irrelevant and misses the essential information from the source.
+Score 5: The summary is perfectly relevant and captures all the essential information from the source accurately.
 
 ###Feedback:""",
-
+            
             'coherence': f"""###Task Description:
 An instruction (might include an Input inside it), a response to evaluate, a reference answer that gets a score of 5, and a score rubric representing an evaluation criterion are given.
 1. Write a detailed feedback that assesses the quality of the response strictly based on the given score rubric, not evaluating in general.
 2. After writing a feedback, write a score that is an integer between 1 and 5. You should refer to the score rubric.
 3. The output format should look as follows: "Feedback: {{write a feedback for criteria}} [RESULT] {{an integer number between 1 and 5}}"
 
-Evaluate the logical flow and coherence of the following summary.
+###The instruction to evaluate:
+Evaluate the coherence and logical flow of the following summary.
 
-###Summary to evaluate:
+###Response to evaluate:
 {summary}
 
 ###Score Rubric:
-How coherent and logically structured is the summary?
-Score 1: The summary lacks logical flow and coherence.
-Score 5: The summary flows perfectly with smooth transitions.
+How coherent and logical is the summary?
+Score 1: The summary lacks logical flow, is highly disjointed, and is difficult to read.
+Score 5: The summary flows perfectly with smooth transitions and excellent readability.
+
+###Feedback:""",
+
+            'factual_consistency': f"""###Task Description:
+An instruction (might include an Input inside it), a response to evaluate, a reference answer that gets a score of 5, and a score rubric representing an evaluation criterion are given.
+1. Write a detailed feedback that assesses the quality of the response strictly based on the given score rubric, not evaluating in general.
+2. After writing a feedback, write a score that is an integer between 1 and 5. You should refer to the score rubric.
+3. The output format should look as follows: "Feedback: {{write a feedback for criteria}} [RESULT] {{an integer number between 1 and 5}}"
+
+###The instruction to evaluate:
+Evaluate the factual consistency of the following summary based on the provided source text.
+Source text: {source[:10000]}
+
+###Response to evaluate:
+{summary}
+
+###Score Rubric:
+How factually consistent is the summary with the source text?
+Score 1: The summary contains severe hallucinations or contradicts the source text directly.
+Score 5: The summary is perfectly faithful to the source text without any invented details.
 
 ###Feedback:"""
         }
 
         try:
             prompt = prompts.get(dimension, prompts['relevance'])
-            inputs = self.prometheus_tokenizer(
-                prompt, 
-                return_tensors="pt", 
-                truncation=True, 
-                max_length=8192
-            )
-
+            inputs = self.prometheus_tokenizer(prompt, return_tensors="pt", truncation=True, max_length=8192)
             if self.device == 0:
                 inputs = {k: v.cuda() for k, v in inputs.items()}
 
             with torch.no_grad():
                 outputs = self.prometheus_model.generate(
-                    **inputs,
-                    max_new_tokens=512,
-                    do_sample=False
+                    **inputs, 
+                    max_new_tokens=256, 
+                    do_sample=False,
+                    temperature=None,
+                    top_p=None,
+                    top_k=None
                 )
 
-            # Slice to get ONLY the generated tokens (ignore the prompt)
             input_length = inputs["input_ids"].shape[1]
-            generated_tokens = outputs[0][input_length:]
-            response = self.prometheus_tokenizer.decode(generated_tokens, skip_special_tokens=True)
+            response_text = self.prometheus_tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
 
-            # Initialize score to a default value before parsing
-            score = 0.0 
+            import re
+            
+            score = 0.0
+            feedback = "No feedback provided."
 
-            # Extract score from response using [-1] to target the final output
-            if "[RESULT]" in response:
-                score_text = response.split("[RESULT]")[-1].strip()
-                match = re.search(r"\[RESULT\]\s*([0-9]+(?:\.[0-9]+)?)", response, re.IGNORECASE)
-
-                if match:
-                    score = float(match.group(1)) / 5.0
+            # Parse standard Prometheus format: "Feedback: <text> [RESULT] <score>"
+            if "[RESULT]" in response_text:
+                parts = response_text.split("[RESULT]")
+                
+                # 1. Extract and clean the Feedback
+                raw_feedback = parts[0].strip()
+                # Remove the leading "Feedback:" string if the model included it
+                if raw_feedback.startswith("Feedback:"):
+                    feedback = raw_feedback[len("Feedback:"):].strip()
                 else:
-                    # Fallback: Just try to find the last number in the response
-                    fallback_match = re.findall(r"([0-9]+(?:\.[0-9]+)?)", response)
-                    if fallback_match:
-                        score = float(fallback_match[-1]) / 5.0
-                    else:
-                        score = 0.0
+                    feedback = raw_feedback
+                
+                # 2. Extract and normalize the Score
+                score_text = parts[-1].strip()
+                match = re.search(r"([0-9]+(?:\.[0-9]+)?)", score_text)
+                if match:
+                    # Normalize the 1-5 score to a 0.0-1.0 scale
+                    score = float(match.group(1)) / 5.0
             else:
-                # Optional: you can try to extract a number even if [RESULT] is missing
-                fallback_match = re.findall(r"([0-9]+(?:\.[0-9]+)?)", response)
-                if fallback_match:
-                    score = float(fallback_match[-1]) / 5.0
+                return {"score": 0.0, "passed": False, "actionable_feedback": f"Failed to parse output. Missing [RESULT] tag. Raw output: {response_text}"}
 
-            return score, response
+            # Fetch threshold safely
+            threshold = getattr(config.ThresholdConfig, f"min_{dimension}", 0.4)
+            passed = score >= threshold
+            
+            return {
+                "score": score,
+                "passed": passed,
+                "actionable_feedback": feedback
+            }
+
         except Exception as e:
-            logger.error(f"Prometheus evaluation failed: {e}")
-            return 0.0, ""
+            logger.error(f"Prometheus evaluation failed for {dimension}: {e}")
+            return {"score": 0.0, "passed": False, "actionable_feedback": f"Evaluation error: {str(e)}"}
 
     def evaluate_fluency(self, text: str) -> float:
         """
         Calculate perplexity for fluency using the already-loaded causal LM.
         Returns a normalized score between 0 and 1 (higher is more fluent).
         """
-        # Reuse the prometheus model if available, otherwise fallback to mock
-        eval_model = getattr(self, 'prometheus_model', None)
-        eval_tokenizer = getattr(self, 'prometheus_tokenizer', None)
+        # Pull the dedicated fluency model instead of the Prometheus judge
+        eval_model = getattr(self, 'fluency_model', None)
+        eval_tokenizer = getattr(self, 'fluency_tokenizer', None)
         
         if not eval_model or not eval_tokenizer:
             logger.warning("Model for fluency not available, returning default score")
             return 0.0
 
         try:
-            # Tokenize the text
             encodings = eval_tokenizer(
                 text, 
                 return_tensors="pt", 
                 truncation=True, 
                 max_length=8192
             )
-            
-            # Dynamically route inputs to whatever device the causal LM is currently utilizing
             input_ids = encodings.input_ids.to(eval_model.device)
 
             with torch.no_grad():
-                # Use explicit keyword arguments for safety 
                 outputs = eval_model(input_ids=input_ids, labels=input_ids)
                 loss = outputs.loss
                 
-            # Calculate standard perplexity (lower is better, theoretically starts at 1.0)
             perplexity = torch.exp(loss).item()
             
-            # Normalize to a 0.0 - 1.0 scale to match your other metrics (higher is better)
-            # A typical fluent text has a perplexity between 5 and 20. 
-            # This formula smoothly maps standard perplexities to high scores (e.g., P=10 -> ~0.9).
-            normalized_score = max(0.0, 1.0 - (perplexity / 100.0))
+            # Normalize using inverse decay. 
+            # Adjust 'baseline_p' based on your specific causal LM's average loss.
+            baseline_p = 15.0 
+            normalized_score = baseline_p / (baseline_p + perplexity - 1.0)
             
-            # Optional: Log the raw perplexity for your own debugging
-            # logger.debug(f"Raw Perplexity: {perplexity:.2f} -> Fluency Score: {normalized_score:.2f}")
-
-            return normalized_score
+            # Clamp between 0.0 and 1.0 just to be safe
+            return max(0.0, min(1.0, normalized_score))
 
         except Exception as e:
             logger.error(f"Fluency evaluation failed: {e}")
@@ -530,7 +589,7 @@ An instruction (might include an Input inside it), a response to evaluate, a ref
 
 ###The instruction to evaluate:
 Evaluate the following summary for fairness, neutrality, and absence of bias based on the original source text: 
-{source[:1000]}
+{source[:10000]}
 
 ###Response to evaluate:
 {summary}
@@ -556,7 +615,6 @@ Score 5: The summary is perfectly objective, completely free of introduced bias,
                 inputs = {k: v.cuda() for k, v in inputs.items()}
 
             # Generate the evaluation reasoning and score
-            import torch
             with torch.no_grad():
                 outputs = eval_model.generate(
                     **inputs,
@@ -598,9 +656,11 @@ Score 5: The summary is perfectly objective, completely free of introduced bias,
             results['similarity_score'] = self.evaluate_similarity(summary, reference)
 
         # Factual consistency
-        results['factual_consistency_score'] = self.evaluate_factual_consistency(
-            source, summary
+        fact_score, fact_feedback = self.evaluate_with_prometheus(
+            summary, source, 'factual_consistency'
         )
+        results['factual_consistency_score'] = fact_score
+        results['factual_consistency_feedback'] = fact_feedback
 
         # Relevance
         relevance_score, rel_feedback = self.evaluate_with_prometheus(
@@ -643,8 +703,6 @@ class SummaryEvaluationPipeline:
         logger.info("Initializing DeepEval Engine...")
 
         # Phase 1: Orchestration & Text Quality
-        self.quality_evaluator = DeepEvalPipeline(use_deepeval=True)
-
         logger.info("Initializing Textual Quality Evaluator...")
         self.textual_evaluator = TextualQualityEvaluator()
 
@@ -660,173 +718,40 @@ class SummaryEvaluationPipeline:
 
         logger.info("Pipeline initialization complete")
 
-    def evaluate_summary(self,
-                        summary: str,
-                        source_text: str,
-                        reference_summary: Optional[str] = None,
-                        generation_time: Optional[float] = None) -> EvaluationResult:
-        """
-        Run complete evaluation pipeline on a summary
-
-        Pipeline flow:
-        1. Safety Gate (toxicity, PII)
-        2. Fast Heuristics (BERTScore, AlignScore)
-        3. Deep Semantic Eval (Prometheus 2)
-        4. Aggregation
-
-        Args:
-            summary: The generated summary to evaluate
-            source_text: Original text that was summarized
-            reference_summary: Optional ground-truth reference
-            generation_time: Optional generation time from inference engine
-
-        Returns:
-            EvaluationResult with all scores and metadata
-        """
-        start_time = time.time()
-
+    def evaluate_summary(self, summary: str, source_text: str) -> EvaluationResult:
+        """A simplified evaluation for offline testing (without LangGraph)"""
         result = EvaluationResult(
             timestamp=datetime.now().isoformat(),
             summary=summary,
             source_text=source_text,
-            generation_time=generation_time
         )
-
-        logger.info("="*60)
-        logger.info("Starting evaluation pipeline")
-        logger.info("="*60)
-
-        # Step 1: Safety Gate
+        
+        # 1. Safety Checks
         if self.enable_safety:
-            logger.info("Step 1: Running safety checks...")
             safety_results = self.safety_gate.evaluate(summary)
-
             result.safety_passed = safety_results['safety_passed']
-            result.toxicity_score = safety_results['toxicity_score']
-            result.pii_detected = safety_results['pii_detected']
-
             if not result.safety_passed:
-                result.failure_reasons.append("Failed safety checks")
-                logger.warning("⚠️  Summary FAILED safety gate")
-                result.feedback_logs['safety'] = "CRITICAL: The previous summary failed safety checks by leaking PII or toxic content. Remove all sensitive data, names, and emails."
                 result.passed_all_checks = False
+                result.failure_reasons.append("Failed safety checks")
                 return result
 
-            logger.info("✓ Safety checks passed")
+        # 2. Prometheus Quality Checks
+        rel_eval = self.textual_evaluator.evaluate_with_prometheus(summary, source_text, 'relevance')
+        coh_eval = self.textual_evaluator.evaluate_with_prometheus(summary, source_text, 'coherence')
+        fact_eval = self.textual_evaluator.evaluate_with_prometheus(summary, source_text, 'factual_consistency')
 
-        # Step 2 & 3: Textual Quality Evaluation
-        logger.info("Step 2-3: Running DeepEval and Textual quality evaluations...")
-
-        textual_results = self.textual_evaluator.evaluate_all(summary, source_text, reference_summary)
+        result.relevance_score = rel_eval['score']
+        result.coherence_score = coh_eval['score']
+        result.factual_consistency_score = fact_eval['score']
         
-        result.similarity_score = textual_results.get('similarity_score')
-        result.fluency_score = textual_results.get('fluency_score')
-        result.fairness_score = textual_results.get('fairness_score')
+        result.passed_all_checks = rel_eval['passed'] and coh_eval['passed'] and fact_eval['passed']
         
-        # 1. Create a DeepEval test case
-        test_case = self.quality_evaluator.create_test_case(
-            input_text=source_text,
-            actual_output=summary,
-            expected_output=reference_summary,
-            context=[source_text],
-            retrieval_context=[source_text]
-        )
-        
-        # 2. Run the DeepEval metrics
-        deepeval_results = self.quality_evaluator.evaluate_single(test_case)
-        
-        # 3. Extract metrics based on the names defined in deepeval_integration.py
-        relevancy = next((val for key, val in deepeval_results.items() if 'relevancy' in key.lower()), {})
-        faithfulness = next((val for key, val in deepeval_results.items() if 'faithfulness' in key.lower()), {})
-        coherence = next((val for key, val in deepeval_results.items() if 'coherence' in key.lower()), {})
-
-        # Fallback to TextualQualityEvaluator scores only if DeepEval fails to return a score.
-        f_score = faithfulness.get('score') # Returns None if missing
-        result.factual_consistency_score = textual_results.get('factual_consistency_score') if f_score is None else f_score
-        
-        r_score = relevancy.get('score')
-        result.relevance_score = textual_results.get('relevance_score') if r_score is None else r_score
-        
-        c_score = coherence.get('score')
-        result.coherence_score = textual_results.get('coherence_score') if c_score is None else c_score
-        
-        if not faithfulness.get('success', False):
-            result.failure_reasons.append(f"Factual consistency failed (Score: {result.factual_consistency_score})")
-            result.feedback_logs['factual_consistency'] = faithfulness.get('reason') or "Hallucination or contradiction detected."
-            
-        if not relevancy.get('success', False):
-            result.failure_reasons.append(f"Relevance failed (Score: {result.relevance_score})")
-            result.feedback_logs['relevance'] = relevancy.get('reason') or textual_results.get('relevance_feedback') or "Summary does not address the core content."
-            
-        if not coherence.get('success', False):
-            result.failure_reasons.append(f"Coherence failed (Score: {result.coherence_score})")
-            result.feedback_logs['coherence'] = coherence.get('reason') or textual_results.get('coherence_feedback') or "Summary lacks logical flow."
-
-        thresholds = {
-            'similarity': config.ThresholdConfig.min_similarity,
-            'fluency': config.ThresholdConfig.min_fluency,
-            'fairness': config.ThresholdConfig.min_fairness
-        }
-
-        # Check Similarity
-        if result.similarity_score is not None and result.similarity_score < thresholds['similarity']:
-            result.failure_reasons.append(f"Similarity too low (Score: {result.similarity_score:.3f})")
-            result.feedback_logs['similarity'] = f"The summary deviated too much from the source meaning. It scored {result.similarity_score:.3f} (target: {thresholds['similarity']}). Ensure core facts are accurately represented."
-
-        # Check Fluency
-        if result.fluency_score is not None and result.fluency_score < thresholds['fluency']:
-            result.failure_reasons.append(f"Fluency failed (Score: {result.fluency_score:.3f})")
-            result.feedback_logs['fluency'] = f"The summary lacks natural flow or has awkward phrasing. It scored {result.fluency_score:.3f} (target: {thresholds['fluency']}). Rewrite for perfect grammar and readability."
-
-        # Check Fairness
-        if result.fairness_score is not None and result.fairness_score < thresholds['fairness']:
-            result.failure_reasons.append(f"Fairness failed (Score: {result.fairness_score:.3f})")
-            result.feedback_logs['fairness'] = f"The summary introduced bias or altered the neutral tone of the source. It scored {result.fairness_score:.3f} (target: {thresholds['fairness']}). Ensure strict objectivity."
-
-        # Step 4: Final aggregation
-        result.passed_all_checks = len(result.failure_reasons) == 0
-
-        eval_time = time.time() - start_time
-        logger.info(f"✓ Quality evaluation complete (took {eval_time:.2f}s)")
-        logger.info("="*60)
-        logger.info(f"Final result: {'PASSED' if result.passed_all_checks else 'FAILED'}")
-        logger.info("="*60)
+        if not result.passed_all_checks:
+            if not rel_eval['passed']: result.failure_reasons.append("Relevance Failed")
+            if not coh_eval['passed']: result.failure_reasons.append("Coherence Failed")
+            if not fact_eval['passed']: result.failure_reasons.append("Factual Consistency Failed")
 
         return result
-
-    def evaluate_batch(self, 
-                       test_cases: List[Dict[str, str]]) -> List[EvaluationResult]:
-        """
-        Evaluate multiple summaries in batch
-
-        Args:
-            test_cases: List of dicts with 'summary', 'source_text', and optional 'reference'
-
-        Returns:
-            List of EvaluationResults
-        """
-        results = []
-
-        logger.info(f"Starting batch evaluation of {len(test_cases)} test cases")
-
-        for i, test_case in enumerate(test_cases, 1):
-            logger.info(f"\nProcessing test case {i}/{len(test_cases)}")
-
-            result = self.evaluate_summary(
-                summary=test_case['summary'],
-                source_text=test_case['source_text'],
-                reference_summary=test_case.get('reference')
-            )
-
-            results.append(result)
-
-        # Summary statistics
-        passed = sum(1 for r in results if r.passed_all_checks)
-        logger.info(f"\n{'='*60}")
-        logger.info(f"Batch evaluation complete: {passed}/{len(results)} passed")
-        logger.info(f"{'='*60}")
-
-        return results
 
     def save_results(self, results: List[EvaluationResult], filepath: str):
         """Save evaluation results to JSON file"""

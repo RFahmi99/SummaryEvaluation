@@ -52,21 +52,23 @@ class OllamaLLMHandler:
             print(f"⚠ Warning: Could not connect to Ollama at {self.base_url}")
             print(f"   Make sure Ollama is running: {e}")
 
-    def build_improvement_context(self, feedback_logs: Dict[str, str], previous_draft: str = "") -> str:
-        """Constructs a strict directive based on failed evaluation metrics"""
+    def build_improvement_context(self, feedback_logs: Dict[str, dict], previous_draft: str = "") -> str:
+        """Constructs a strict directive based on JSON evaluation metrics"""
         if not feedback_logs:
             return ""
             
         context = "CRITICAL DIRECTIVE: You are revising a previous summary that failed quality checks.\n\n"
-        
         if previous_draft:
             context += f"### Previous Failed Draft:\n{previous_draft}\n\n"
             
         context += "### Pinpointed Faults to Fix:\n"
-        for i, (metric, feedback) in enumerate(feedback_logs.items(), 1):
-            context += f"{i}. [{metric.upper()}]: {feedback}\n"
+        
+        # Parse the JSON dictionaries
+        for metric, data in feedback_logs.items():
+            feedback = data.get("actionable_feedback", "")
+            context += f"- [{metric.upper()} FAILED]: {feedback}\n"
             
-        context += "\nRewrite the summary completely. You MUST resolve the exact faults listed above while maintaining all other constraints. Do not repeat the mistakes of the previous draft."
+        context += "\nRewrite the summary. You MUST resolve the exact faults listed above. Do not repeat the mistakes of the previous draft."
         
         return context
 
@@ -140,19 +142,20 @@ class OllamaLLMHandler:
         logger = logging.getLogger(__name__)
         
         # Strategy 1: Strict article block with optional newline after ```article
-        pattern1 = r'```[ \t]*article[ \t]*\n?(.*?)```'
+        pattern1 = r'[`]{3}[ \t]*article[ \t]*\n?(.*?)[`]{3}'
         match = re.search(pattern1, raw_response, re.DOTALL | re.IGNORECASE)
         if match:
             return match.group(1).strip()
         
-        # Strategy 2: "## Headline" marker (as instructed in the prompt)
-        pattern2 = r'##\s*Headline\s*\n(.*?)(?=```|$)'
+        # Strategy 2: "## Headline" marker (captures everything from ## Headline down)
+        pattern2 = r'(##\s*Headline\s*\n.*?)(?=[`]{3}|$)'
         match = re.search(pattern2, raw_response, re.DOTALL | re.IGNORECASE)
         if match:
             return match.group(1).strip()
         
         # Strategy 3: Last code block of any language (often the final article)
-        code_blocks = re.findall(r'```(?:\w*)\n(.*?)```', raw_response, re.DOTALL)
+        pattern3 = r'[`]{3}(?:.*?)\n(.*?)[`]{3}'
+        code_blocks = re.findall(pattern3, raw_response, re.DOTALL)
         if code_blocks:
             return code_blocks[-1].strip()
         
