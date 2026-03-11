@@ -53,22 +53,42 @@ class OllamaLLMHandler:
             print(f"   Make sure Ollama is running: {e}")
 
     def build_improvement_context(self, feedback_logs: Dict[str, dict], previous_draft: str = "") -> str:
-        """Constructs a strict directive based on JSON evaluation metrics"""
+        """Constructs a strict directive based on JSON evaluation metrics and specific judge feedback."""
         if not feedback_logs:
             return ""
             
-        context = "CRITICAL DIRECTIVE: You are revising a previous summary that failed quality checks.\n\n"
-        if previous_draft:
-            context += f"### Previous Failed Draft:\n{previous_draft}\n\n"
-            
-        context += "### Pinpointed Faults to Fix:\n"
+        context = "### 🚨 CRITICAL REVISION DIRECTIVE 🚨 ###\n"
+        context += "Your previous draft failed strict quality evaluations. You MUST resolve these exact faults in your new draft.\n\n"
         
-        # Parse the JSON dictionaries
-        for metric, data in feedback_logs.items():
-            feedback = data.get("actionable_feedback", "")
-            context += f"- [{metric.upper()} FAILED]: {feedback}\n"
+        if previous_draft:
+            context += f"#### Previous Failed Draft:\n```text\n{previous_draft}\n```\n\n"
             
-        context += "\nRewrite the summary. You MUST resolve the exact faults listed above. Do not repeat the mistakes of the previous draft."
+        context += "#### Evaluation Feedback & Required Corrections:\n"
+        
+        # Dimension-specific behavioral constraints
+        dimension_directives = {
+            'relevance': "Focus strictly on the source text. Remove any tangential, trivial, or off-topic information.",
+            'coherence': "Restructure the text so it flows logically. Ensure smooth transitions between sentences and ideas.",
+            'factual_consistency': "Correct the identified hallucinations or factual errors. You are strictly forbidden from inventing facts or numbers.",
+            'fluency': "Rewrite awkward or unnatural phrasing. Fix grammatical errors and improve readability.",
+            'fairness': "Remove bias and subjective language. Maintain a perfectly neutral, objective journalistic tone.",
+            'similarity': "Ensure all key concepts, entities, and facts from the reference are comprehensively covered.",
+            'safety': "Remove any toxic, harmful, or PII content immediately."
+        }
+        
+        for metric, data in feedback_logs.items():
+            feedback_reason = data.get("actionable_feedback", "No detailed feedback provided.")
+            directive = dimension_directives.get(metric, "Improve this specific metric.")
+            
+            # Format the score to show how badly it failed
+            score = data.get("score")
+            score_str = f"{score:.2f}" if isinstance(score, float) else str(score)
+            
+            context += f"❌ **FAILED DIMENSION: {metric.replace('_', ' ').upper()}** (Score: {score_str})\n"
+            context += f"   - **Judge's Critique:** {feedback_reason}\n"
+            context += f"   - **Action Required:** {directive}\n\n"
+            
+        context += "Do not repeat the mistakes of the previous draft. You must explicitly address these critiques in your Phase 1 Planning.\n"
         
         return context
 

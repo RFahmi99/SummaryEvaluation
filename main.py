@@ -134,11 +134,11 @@ class SummarizationPipeline:
             rel_eval = evaluator.textual_evaluator.evaluate_with_prometheus(summary, source, 'relevance')
             coh_eval = evaluator.textual_evaluator.evaluate_with_prometheus(summary, source, 'coherence')
             fact_eval = evaluator.textual_evaluator.evaluate_with_prometheus(summary, source, 'factual_consistency')
+            fairness_eval = evaluator.textual_evaluator.evaluate_with_prometheus(summary, source, 'fairness')
             
-            # Run the missing evaluations to populate the CSV
-            sim_score = evaluator.textual_evaluator.evaluate_similarity(summary, reference) if reference else None
-            fluency_score = evaluator.textual_evaluator.evaluate_fluency(summary)
-            fairness_score = evaluator.textual_evaluator.evaluate_fairness(summary, source)
+            # Run the missing evaluations
+            sim_eval = evaluator.textual_evaluator.evaluate_similarity(summary, reference) if reference else None
+            fluency_eval = evaluator.textual_evaluator.evaluate_fluency(summary)
             
             # Safety Gate checks
             safety_passed = True
@@ -148,11 +148,15 @@ class SummarizationPipeline:
                 safety_passed = safe_res['safety_passed']
                 toxicity_score = safe_res['toxicity_score']
 
+            # Build Feedback Logs for ALL dimensions
             feedbacks = {}
             if not rel_eval['passed']: feedbacks['relevance'] = rel_eval
             if not coh_eval['passed']: feedbacks['coherence'] = coh_eval
             if not fact_eval['passed']: feedbacks['factual_consistency'] = fact_eval
-            if not safety_passed: feedbacks['safety'] = {'actionable_feedback': 'Summary failed safety checks.'}
+            if not fairness_eval['passed']: feedbacks['fairness'] = fairness_eval
+            if not fluency_eval['passed']: feedbacks['fluency'] = fluency_eval
+            if sim_eval and not sim_eval['passed']: feedbacks['similarity'] = sim_eval
+            if not safety_passed: feedbacks['safety'] = {'actionable_feedback': 'Summary failed safety and/or PII checks. Remove harmful content or PII.'}
             
             state['passed_all_checks'] = len(feedbacks) == 0
             state['feedback_logs'] = feedbacks
@@ -186,9 +190,9 @@ class SummarizationPipeline:
                 'relevance_score': rel_eval['score'],
                 'coherence_score': coh_eval['score'],
                 'factual_consistency_score': fact_eval['score'],
-                'similarity_score': sim_score,
-                'fluency_score': fluency_score,
-                'fairness_score': fairness_score,
+                'similarity_score': sim_eval['score'] if sim_eval else None,
+                'fluency_score': fluency_eval['score'],
+                'fairness_score': fairness_eval['score'],
                 'safety_passed': safety_passed,
                 'toxicity_score': toxicity_score,
                 'failure_reasons': list(feedbacks.keys()) if not state['passed_all_checks'] else []

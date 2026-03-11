@@ -16,8 +16,9 @@ Write a comprehensive, factual news article based *strictly* on the provided sou
 You must follow a strict **Plan-then-Iterate** process. Do not write the final article immediately.
 
 1. **PHASE 1: ANALYSIS & PLANNING (Internal Monologue - Chain of Thought)**
+    * **Critique Resolution:** If a "CRITICAL REVISION DIRECTIVE" was provided above, explicitly state the exact steps you will take to fix the Judge's critiques in this new draft.
     * **Fact Extraction & Mapping:** Map specific facts to their source IDs (e.g., "Casualties: 15 [1], 20 [2]").
-    * **Consensus & Conflict Check:** * Identify facts supported by multiple sources. 
+    * **Consensus & Conflict Check:** Identify facts supported by multiple sources.
         * **Constraint:** Quote the exact snippets from the sources that support the consensus.
         * **CRITICAL:** If sources conflict (e.g., different casualty numbers), explicitly note the discrepancy.
         * **Prioritization:** If a conflict exists between an official datum (e.g., police report) and an estimate, prioritize the official datum but note the estimate. Otherwise, report the range, the most authoritative source, or the most recent figure.
@@ -34,7 +35,7 @@ You must follow a strict **Plan-then-Iterate** process. Do not write the final a
         * **To make space:** You must use abstraction, fusion, compression, and the removal of uninformative filler phrases to make room for the new facts without increasing the word count.
 
 **CONSTRAINTS:**
-* **Length:** Every draft in Phase 2 and Phase 3 MUST be {{ max_word_count }} words or less. Do not exceed or fall short of this limit.
+* **Length:** Every draft in Phase 2 and Phase 3 MUST be {{ max_word_count }} words or less. Do not exceed or fall significantly short of this limit.
 * **Formatting:** Use Markdown (## Headers, **Bold** for emphasis).
 * **Safety:** Do not invent details (Hallucination check).
 * **Clause-Level Citations:** You must place [n] citations immediately after the specific fact, figure, or quote they support in all drafts. Do not group them all at the end of the sentence.

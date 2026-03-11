@@ -347,11 +347,11 @@ class TextualQualityEvaluator:
             return [""]
         return [" ".join(words[i:i + max_words]) for i in range(0, len(words), max_words)]
 
-    def evaluate_similarity(self, generated: str, reference: str) -> float:
+    def evaluate_similarity(self, generated: str, reference: str) -> dict:
         """BERTScore for similarity using cross-chunking for long documents."""
         if getattr(self, 'bert_scorer', None) is None:
             logger.warning("BERTScore not available")
-            return 0.0
+            return {"score": 0.0, "passed": False, "actionable_feedback": "BERTScore not available"}
 
         try:
             # 1. Type guard for multi-reference datasets
@@ -362,7 +362,7 @@ class TextualQualityEvaluator:
             ref_str = str(reference).strip()
             
             if not gen_str or not ref_str:
-                return 0.0
+                return {"score": 0.0, "passed": False, "actionable_feedback": "Empty generation or reference text."}
 
             # 2. Chunk both texts to stay well under the matrix and token limits
             chunk_size = 300
@@ -376,7 +376,14 @@ class TextualQualityEvaluator:
             # 3. Fast path: If both texts are short, do a standard comparison
             if len(gen_chunks) == 1 and len(ref_chunks) == 1:
                 P, R, F1 = self.bert_scorer.score([gen_chunks[0]], [ref_chunks[0]], verbose=False)
-                return float(F1.item())
+                score = float(F1.item())
+                threshold = getattr(config.ThresholdConfig, "min_similarity", 0.4)
+                passed = score >= threshold
+                return {
+                    "score": score,
+                    "passed": passed,
+                    "actionable_feedback": "The summary accurately reflects the core concepts of the reference." if passed else f"Similarity score was {score:.2f} (Required: {threshold:.2f})."
+                }
 
             # 4. Cross-chunk comparison for long texts
             chunk_f1_scores = []
@@ -395,11 +402,24 @@ class TextualQualityEvaluator:
                 
             # 5. Average the best matching scores to get the overall similarity
             overall_f1 = sum(chunk_f1_scores) / len(chunk_f1_scores) if chunk_f1_scores else 0.0
-            return overall_f1
+            
+            threshold = getattr(config.ThresholdConfig, "min_similarity", 0.4)
+            passed = overall_f1 >= threshold
+            
+            if passed:
+                feedback = "The summary accurately reflects the core concepts of the reference."
+            else:
+                feedback = f"Similarity score was {overall_f1:.2f} (Required: {threshold:.2f}). The summary deviates significantly from the expected reference. Ensure all main entities and concepts from the source are present."
+
+            return {
+                "score": overall_f1,
+                "passed": passed,
+                "actionable_feedback": feedback
+            }
             
         except Exception as e:
-            logger.error(f"BERTScore evaluation failed: {e}")
-            return 0.0
+            logger.error(f"Fluency evaluation failed: {e}")
+            return {"score": 0.0, "passed": False, "actionable_feedback": f"Fluency evaluation failed: {e}"}
 
     def evaluate_with_prometheus(self, summary: str, source: str, dimension: str) -> dict:
         """Use Prometheus 2 to generate strict JSON feedback for Relevancy, Coherence, and Factual Consistency"""
@@ -407,64 +427,99 @@ class TextualQualityEvaluator:
             logger.warning("Prometheus 2 not available")
             return {"score": 0.0, "passed": False, "actionable_feedback": "Prometheus model unavailable."}
 
+        # Safeguard: Truncate source text to a reasonable length to prevent tokenization overflow.
+        safe_source = " ".join(source.split()[:4000]) # roughly 4000 words (~6000 tokens)
+
         # Define custom prompts that force a strict JSON output
         prompts = {
             'relevance': f"""###Task Description:
-An instruction (might include an Input inside it), a response to evaluate, a reference answer that gets a score of 5, and a score rubric representing an evaluation criterion are given.
+An instruction (might include an Input inside it), a response to evaluate, and a score rubric representing an evaluation criterion are given.
 1. Write a detailed feedback that assesses the quality of the response strictly based on the given score rubric, not evaluating in general.
 2. After writing a feedback, write a score that is an integer between 1 and 5. You should refer to the score rubric.
 3. The output format should look as follows: "Feedback: {{write a feedback for criteria}} [RESULT] {{an integer number between 1 and 5}}"
 
 ###The instruction to evaluate:
 Evaluate the relevance of the following summary based on the original source text.
-Source text: {source[:10000]}
+Source text: {safe_source}
 
 ###Response to evaluate:
 {summary}
 
 ###Score Rubric:
 How relevant is the summary to the source text?
-Score 1: The summary is completely irrelevant and misses the essential information from the source.
-Score 5: The summary is perfectly relevant and captures all the essential information from the source accurately.
+Score 1: The summary is completely irrelevant, misses all essential information, or focuses entirely on trivial, off-topic details.
+Score 2: The summary is poorly relevant; it misses the main core messages of the source but manages to capture a few minor or tangential details.
+Score 3: The summary is moderately relevant; it captures some essential information but omits other key points, or it includes a significant amount of unnecessary fluff.
+Score 4: The summary is highly relevant; it captures almost all of the essential information with very little irrelevant information or filler.
+Score 5: The summary is perfectly relevant; it concisely captures all essential information from the source accurately without any extraneous or off-topic details.
 
 ###Feedback:""",
             
             'coherence': f"""###Task Description:
-An instruction (might include an Input inside it), a response to evaluate, a reference answer that gets a score of 5, and a score rubric representing an evaluation criterion are given.
+An instruction (might include an Input inside it), a response to evaluate, and a score rubric representing an evaluation criterion are given.
 1. Write a detailed feedback that assesses the quality of the response strictly based on the given score rubric, not evaluating in general.
 2. After writing a feedback, write a score that is an integer between 1 and 5. You should refer to the score rubric.
 3. The output format should look as follows: "Feedback: {{write a feedback for criteria}} [RESULT] {{an integer number between 1 and 5}}"
 
 ###The instruction to evaluate:
-Evaluate the coherence and logical flow of the following summary.
+Evaluate the coherence and logical flow of the following summary. Consider how well the sentences connect and whether the ideas progress in a structured, readable manner.
 
 ###Response to evaluate:
 {summary}
 
 ###Score Rubric:
 How coherent and logical is the summary?
-Score 1: The summary lacks logical flow, is highly disjointed, and is difficult to read.
-Score 5: The summary flows perfectly with smooth transitions and excellent readability.
+Score 1: The summary completely lacks logical flow, is highly disjointed, and is extremely difficult to read or understand.
+Score 2: The summary has severe structural issues. Sentences feel disconnected or randomly placed, making the core ideas hard to follow.
+Score 3: The summary is moderately coherent but contains noticeable awkward transitions, structural jumps, or abrupt topic changes that disrupt the reading experience.
+Score 4: The summary is highly coherent and mostly easy to read, with only very minor or infrequent issues in transitions or sentence flow.
+Score 5: The summary flows perfectly with excellent readability, exceptionally smooth transitions, and a highly logical, natural progression of ideas.
 
 ###Feedback:""",
 
             'factual_consistency': f"""###Task Description:
-An instruction (might include an Input inside it), a response to evaluate, a reference answer that gets a score of 5, and a score rubric representing an evaluation criterion are given.
+An instruction (might include an Input inside it), a response to evaluate, and a score rubric representing an evaluation criterion are given.
 1. Write a detailed feedback that assesses the quality of the response strictly based on the given score rubric, not evaluating in general.
 2. After writing a feedback, write a score that is an integer between 1 and 5. You should refer to the score rubric.
 3. The output format should look as follows: "Feedback: {{write a feedback for criteria}} [RESULT] {{an integer number between 1 and 5}}"
 
 ###The instruction to evaluate:
 Evaluate the factual consistency of the following summary based on the provided source text.
-Source text: {source[:10000]}
+Source text: {safe_source}
 
 ###Response to evaluate:
 {summary}
 
 ###Score Rubric:
 How factually consistent is the summary with the source text?
-Score 1: The summary contains severe hallucinations or contradicts the source text directly.
-Score 5: The summary is perfectly faithful to the source text without any invented details.
+Score 1: The summary contains severe hallucinations, contradicts the source text directly, or fabricates primary entities/events.
+Score 2: The summary contains major factual errors that change the core meaning of the source text.
+Score 3: The summary is mostly faithful but contains minor factual inaccuracies, wrong numbers, or attributes actions to the wrong minor entities.
+Score 4: The summary is faithful to the source text, with only negligible omissions of context that do not alter the truthfulness.
+Score 5: The summary is perfectly faithful to the source text without any invented details, contradictions, or missing critical context.
+
+###Feedback:""",
+
+            'fairness': f"""###Task Description:
+An instruction (might include an Input inside it), a response to evaluate, and a score rubric representing an evaluation criterion are given.
+1. Write a detailed feedback that assesses the quality of the response strictly based on the given score rubric, not evaluating in general.
+2. After writing a feedback, write a score that is an integer between 1 and 5. You should refer to the score rubric.
+3. The output format should look as follows: "Feedback: {{write a feedback for criteria}} [RESULT] {{an integer number between 1 and 5}}"
+
+###The instruction to evaluate:
+Evaluate the following summary for fairness, neutrality, and absence of bias based on the original source text.
+Source text: {safe_source}
+
+###Response to evaluate:
+{summary}
+
+###Score Rubric:
+How fair, objective, and unbiased is the summary compared to the source text?
+Score 1: The summary introduces severe bias, alters the neutral tone of the source, or unfairly misrepresents/excludes primary viewpoints present in the source.
+Score 2: The summary contains major bias issues, uses a noticeably slanted tone, or heavily favors one side of an issue over another compared to the source.
+Score 3: The summary is mostly neutral but contains subtle biases, loaded language, or a slight imbalance in how differing viewpoints are represented.
+Score 4: The summary is highly objective and fair, with only negligible or highly debatable instances of non-neutral phrasing.
+Score 5: The summary is perfectly objective, completely free of introduced bias, and represents the original text fairly, neutrally, and proportionately.
 
 ###Feedback:"""
         }
@@ -539,7 +594,7 @@ Score 5: The summary is perfectly faithful to the source text without any invent
         
         if not eval_model or not eval_tokenizer:
             logger.warning("Model for fluency not available, returning default score")
-            return 0.0
+            return {"score": 0.0, "passed": False, "actionable_feedback": "Fluency model not available"}
 
         try:
             encodings = eval_tokenizer(
@@ -559,92 +614,26 @@ Score 5: The summary is perfectly faithful to the source text without any invent
             # Normalize using inverse decay. 
             # Adjust 'baseline_p' based on your specific causal LM's average loss.
             baseline_p = 15.0 
-            normalized_score = baseline_p / (baseline_p + perplexity - 1.0)
+            normalized_score = max(0.0, min(1.0, baseline_p / (baseline_p + perplexity - 1.0)))
             
-            # Clamp between 0.0 and 1.0 just to be safe
-            return max(0.0, min(1.0, normalized_score))
+            # Fetch threshold safely
+            threshold = getattr(config.ThresholdConfig, "min_fluency", 0.4)
+            passed = normalized_score >= threshold
+            
+            if passed:
+                feedback = "The summary is fluent and natural." 
+            else:
+                feedback = f"Fluency score was {normalized_score:.2f} (Required: {threshold:.2f}). The summary reads unnaturally or contains structural issues. Improve sentence flow and grammar."            
+            
+            return {
+                "score": normalized_score,
+                "passed": passed,
+                "actionable_feedback": feedback
+            }
 
         except Exception as e:
             logger.error(f"Fluency evaluation failed: {e}")
-            return 0.0
-
-    def evaluate_fairness(self, summary: str, source: str) -> float:
-        """
-        FairEval framework for bias detection using the Prometheus LLM judge.
-        Evaluates if the summary introduces bias, stereotypes, or unfairly misrepresents the source.
-        """
-        eval_model = getattr(self, 'prometheus_model', None)
-        eval_tokenizer = getattr(self, 'prometheus_tokenizer', None)
-        
-        if not eval_model or not eval_tokenizer:
-            logger.warning("Prometheus model not available for fairness evaluation, returning default score")
-            return 0.9
-
-        # Construct a Prometheus-compatible prompt specifically for Fairness and Bias
-        prompt = f"""###Task Description:
-An instruction (might include an Input inside it), a response to evaluate, a reference answer that gets a score of 5, and a score rubric representing an evaluation criterion are given.
-1. Write a detailed feedback that assesses the quality of the response strictly based on the given score rubric, not evaluating in general.
-2. After writing a feedback, write a score that is an integer between 1 and 5. You should refer to the score rubric.
-3. The output format should look as follows: "Feedback: {{write a feedback for criteria}} [RESULT] {{an integer number between 1 and 5}}"
-
-###The instruction to evaluate:
-Evaluate the following summary for fairness, neutrality, and absence of bias based on the original source text: 
-{source[:10000]}
-
-###Response to evaluate:
-{summary}
-
-###Score Rubric:
-How fair, objective, and unbiased is the summary compared to the source text?
-Score 1: The summary introduces severe bias, stereotypes, alters the neutral tone of the source, or unfairly misrepresents/excludes specific viewpoints present in the source.
-Score 5: The summary is perfectly objective, completely free of introduced bias, and represents the original text fairly and neutrally.
-
-###Feedback:"""
-
-        try:
-            # Tokenize the prompt
-            inputs = eval_tokenizer(
-                prompt, 
-                return_tensors="pt", 
-                truncation=True, 
-                max_length=8192
-            )
-
-            # Move to GPU if available
-            if self.device == 0:
-                inputs = {k: v.cuda() for k, v in inputs.items()}
-
-            # Generate the evaluation reasoning and score
-            with torch.no_grad():
-                outputs = eval_model.generate(
-                    **inputs,
-                    max_new_tokens=512,
-                    do_sample=False
-                )
-
-            # Slice to get ONLY the generated tokens (ignore the prompt)
-            input_length = inputs["input_ids"].shape[1]
-            generated_tokens = outputs[0][input_length:]
-            response = eval_tokenizer.decode(generated_tokens, skip_special_tokens=True)
-
-            # Extract the numeric score from the Prometheus output format using [-1]
-            if "[RESULT]" in response:
-                score_text = response.split("[RESULT]")[-1].strip()
-                
-                # Extract the first digit found in the text
-                match = re.search(r"([0-9]+(?:\.[0-9]+)?)", score_text)
-                if match:
-                    score = float(match.group(1)) / 5.0 
-                else:
-                    score = 0.0
-            else:
-                score = 0.0  # Fallback if generation failed to follow format
-
-            return score
-
-        except Exception as e:
-            logger.error(f"Fairness evaluation failed: {e}")
-            return 0.0
+            return {"score": 0.0, "passed": False, "actionable_feedback": f"Fluency evaluation failed: {e}"}
 
     def evaluate_all(self, summary: str, source: str, 
                      reference: Optional[str] = None) -> Dict[str, Any]:
@@ -676,11 +665,15 @@ Score 5: The summary is perfectly objective, completely free of introduced bias,
         results['coherence_score'] = coherence_score
         results['coherence_feedback'] = coh_feedback
 
+        # Fairness
+        fairness_eval = self.evaluate_with_prometheus(
+            summary, source, 'fairness'
+        )
+        results['fairness_score'] = fairness_eval['score']
+        results['fairness_feedback'] = fairness_eval['actionable_feedback']
+
         # Fluency
         results['fluency_score'] = self.evaluate_fluency(summary)
-
-        # Fairness
-        results['fairness_score'] = self.evaluate_fairness(summary, source)
 
         return results
 
@@ -699,8 +692,6 @@ class SummaryEvaluationPipeline:
             enable_telemetry: Enable Phase 4 telemetry tracking
         """
         logger.info("Initializing Summary Evaluation Pipeline")
-
-        logger.info("Initializing DeepEval Engine...")
 
         # Phase 1: Orchestration & Text Quality
         logger.info("Initializing Textual Quality Evaluator...")
@@ -739,17 +730,20 @@ class SummaryEvaluationPipeline:
         rel_eval = self.textual_evaluator.evaluate_with_prometheus(summary, source_text, 'relevance')
         coh_eval = self.textual_evaluator.evaluate_with_prometheus(summary, source_text, 'coherence')
         fact_eval = self.textual_evaluator.evaluate_with_prometheus(summary, source_text, 'factual_consistency')
+        fairness_eval = self.textual_evaluator.evaluate_with_prometheus(summary, source_text, 'fairness')
 
         result.relevance_score = rel_eval['score']
         result.coherence_score = coh_eval['score']
         result.factual_consistency_score = fact_eval['score']
+        result.fairness_score = fairness_eval['score']
         
-        result.passed_all_checks = rel_eval['passed'] and coh_eval['passed'] and fact_eval['passed']
+        result.passed_all_checks = rel_eval['passed'] and coh_eval['passed'] and fact_eval['passed'] and fairness_eval['passed']
         
         if not result.passed_all_checks:
             if not rel_eval['passed']: result.failure_reasons.append("Relevance Failed")
             if not coh_eval['passed']: result.failure_reasons.append("Coherence Failed")
             if not fact_eval['passed']: result.failure_reasons.append("Factual Consistency Failed")
+            if not fairness_eval['passed']: result.failure_reasons.append("Fairness Failed")
 
         return result
 
